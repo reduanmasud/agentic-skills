@@ -1,6 +1,6 @@
-# agent-skill-qa
+# agentic-skills
 
-Claude Code skills for QA testing — PR testing, staging validation, security checks with Playwright browser automation.
+A collection of Claude Code skills for agentic workflows — QA testing, staging validation, security auditing, and more.
 
 ## Skills
 
@@ -12,17 +12,17 @@ Claude Code skills for QA testing — PR testing, staging validation, security c
 
 ```bash
 # Add as a plugin marketplace
-/plugin marketplace add reduanmasud/agent-skill-qa
+/plugin marketplace add reduanmasud/agentic-skills
 
 # Install the plugin
-/plugin install agent-skill-qa@reduanmasud-agent-skill-qa
+/plugin install agentic-skills@reduanmasud-agentic-skills
 ```
 
 ## Usage
 
 ```bash
 # QA test a pull request
-/agent-skill-qa:qa-test-pr 4214
+/agentic-skills:qa-test-pr 4214
 ```
 
 ## Requirements
