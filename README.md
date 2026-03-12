@@ -6,7 +6,7 @@ A collection of Claude Code skills for agentic workflows — QA testing, staging
 
 | Skill | Description |
 |-------|-------------|
-| **qa-test-pr** | Comprehensive QA testing of a Pull Request on a staging environment — smoke, sanity, regression, security, IDOR, API, multi-role, and performance testing with Playwright browser automation and detailed reporting |
+| **xcloud-test** | Comprehensive QA testing of a Pull Request on a staging environment — smoke, sanity, regression, security, IDOR, API, multi-role, and performance testing with Playwright browser automation and detailed reporting |
 
 ## Installation
 
@@ -21,7 +21,7 @@ Skills placed in `~/.claude/skills/` are available every time you use Claude Cod
 git clone https://github.com/reduanmasud/agentic-skills.git /tmp/agentic-skills
 
 # Copy the skill(s) you want
-cp -r /tmp/agentic-skills/skills/qa-test-pr ~/.claude/skills/qa-test-pr
+cp -r /tmp/agentic-skills/skills/xcloud-test ~/.claude/skills/xcloud-test
 
 # Clean up
 rm -rf /tmp/agentic-skills
@@ -30,7 +30,7 @@ rm -rf /tmp/agentic-skills
 Or as a one-liner:
 
 ```bash
-git clone https://github.com/reduanmasud/agentic-skills.git /tmp/agentic-skills && cp -r /tmp/agentic-skills/skills/qa-test-pr ~/.claude/skills/qa-test-pr && rm -rf /tmp/agentic-skills
+git clone https://github.com/reduanmasud/agentic-skills.git /tmp/agentic-skills && cp -r /tmp/agentic-skills/skills/xcloud-test ~/.claude/skills/xcloud-test && rm -rf /tmp/agentic-skills
 ```
 
 ### Project-level (available in one project only)
@@ -43,7 +43,7 @@ mkdir -p .claude/skills
 
 # Clone and copy
 git clone https://github.com/reduanmasud/agentic-skills.git /tmp/agentic-skills
-cp -r /tmp/agentic-skills/skills/qa-test-pr .claude/skills/qa-test-pr
+cp -r /tmp/agentic-skills/skills/xcloud-test .claude/skills/xcloud-test
 rm -rf /tmp/agentic-skills
 ```
 
@@ -62,7 +62,7 @@ To get the latest version of a skill, re-run the install steps — it will overw
 
 ```bash
 git clone https://github.com/reduanmasud/agentic-skills.git /tmp/agentic-skills
-cp -r /tmp/agentic-skills/skills/qa-test-pr ~/.claude/skills/qa-test-pr
+cp -r /tmp/agentic-skills/skills/xcloud-test ~/.claude/skills/xcloud-test
 rm -rf /tmp/agentic-skills
 ```
 
@@ -71,7 +71,7 @@ rm -rf /tmp/agentic-skills
 Once installed, invoke the skill in Claude Code:
 
 ```
-/qa-test-pr 4214
+/xcloud-test 4214
 ```
 
 Where `4214` is the PR number you want to QA test.

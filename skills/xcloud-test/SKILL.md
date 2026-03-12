@@ -1,5 +1,5 @@
 ---
-name: qa-test-pr
+name: xcloud-test
 description: Comprehensive QA testing of a Pull Request on the xCloud staging environment — smoke, sanity, regression, security, IDOR, API, multi-role, and performance testing with Playwright browser automation, root cause analysis, and a detailed report. Use when the user wants to QA test a PR, test a feature on staging, or verify a bug fix on the staging environment.
 user-invocable: true
 disable-model-invocation: true
@@ -17,6 +17,7 @@ The PR code is already checked out locally and deployed to the staging server. Y
 - **Local codebase** for reading source code, diffs, and route analysis
 - **Laravel CLI** (artisan) and Tinker for database inspection and cache management
 - **Server logs** at `storage/logs/laravel.log`
+- **Command Runner** (Server > Management > Commands) for running commands on managed servers through the xCloud UI — useful for quick server-side verification without SSH
 
 ## Staging Environment
 
@@ -73,13 +74,39 @@ From the diff, identify:
 - **Modified scripts (app/Scripts/)** — server-side script changes
 - **Shared services or traits** — changes here can affect multiple features
 
-### 1.2 Cross-Feature Impact Analysis
+### 1.2 Cross-Feature Impact Analysis (MANDATORY)
 
-This is critical. Ask: "What *else* does this code affect?" If the PR modifies:
-- A **shared service or trait** — identify and test all consumers
-- A **model or migration** — test all features that use that model
-- A **middleware or policy** — test all routes that use it
-- A **Vue component in `Components/` or `Shared/`** — test all pages that import it
+This is the most important step in preventing missed test cases. Don't just look at the PR diff — systematically search the codebase to find **everything** that consumes the changed code.
+
+**Systematic search methodology:**
+
+1. **For every changed constant, function, class, or template**, use Grep or Explore agents to find ALL consumers across the codebase. Search for:
+   - Direct references: class names, constant names, function calls
+   - Indirect references: variables that hold the values, blade includes, component imports
+
+2. **Categories to search** (check every category that could be affected):
+   - Controllers (`app/Http/Controllers/`)
+   - Services and Actions (`app/Services/`, `app/Actions/`)
+   - Jobs (`app/Jobs/`)
+   - Form Requests (`app/Http/Requests/`)
+   - Policies (`app/Policies/`)
+   - Blade scripts and templates (`resources/views/scripts/`)
+   - Vue pages and components (`resources/js/Pages/`, `resources/js/Components/`)
+   - Model methods and scopes (`app/Models/`)
+   - Routes (`routes/`)
+
+3. **Trace call chains** end-to-end:
+   ```
+   Route → Controller → Service/Action → Job → Script (Blade) → Server config/state
+   ```
+   A change to a model constant can ripple through validation rules → form requests → controllers → blade scripts → actual server commands.
+
+4. **Look for asymmetric behavior across layers**:
+   - Does the frontend block/disable something that the backend API still allows?
+   - Does a Vue component guard a feature that the controller doesn't guard?
+   - Does a blade script handle an edge case that the controller doesn't check for?
+
+5. **Document every consumer** found and note whether it correctly handles the change. This becomes your edge case test list for Section 4.10.
 
 ### 1.3 Plan Test Roles
 
@@ -203,6 +230,27 @@ Verify the PR did NOT break existing functionality:
 
 **Monkey Testing** — Random, unscripted interactions: clicking buttons rapidly, entering unexpected characters (emojis, unicode, SQL fragments), navigating back/forward mid-form, submitting empty forms.
 
+### 4.4a End-to-End Action Execution (MANDATORY)
+
+This is the most critical test — don't just verify the feature appears in the UI. **Actually perform the core action** on staging and verify the full result chain.
+
+The difference between "PHP 8.5 shows an Install button" and "PHP 8.5 was installed, and we verified 14 packages on the server" is the difference between a superficial QA and a real one.
+
+**Steps:**
+1. **Execute the action**: Click Install, Submit, Create, Delete, Toggle — whatever the PR's primary feature enables
+2. **Wait for completion**: Watch for status changes, loading indicators, success/error messages
+3. **Verify UI state**: Screenshot the result — does the page reflect the completed action?
+4. **Verify server-side state** (for server operations): Use SSH or Command Runner to confirm:
+   - Packages installed/removed: `dpkg -l | grep <package>` or `apt list --installed`
+   - Config files created/modified: `cat`, `grep` on expected config paths
+   - Binaries functional: run the binary (e.g., `php -v`, `node -v`)
+   - Services running: `systemctl status <service>`
+   - File system changes: `ls -la <path>`, `find <dir> -name <pattern>`
+5. **Verify database/meta state**: Use Tinker to confirm records, metadata, and flags are correct
+6. **Test related features still work**: After the action, do related features (that depend on the same data) still behave correctly?
+
+**Command Runner shortcut:** Navigate to Server > Management > Commands in xCloud to run verification commands through the UI without SSH.
+
 ### 4.5 API Testing
 
 If the PR introduces or modifies API endpoints:
@@ -246,6 +294,23 @@ Test IDOR on every resource the PR touches — servers, sites, teams, billing, s
 ```
 | Resource | URL Tested | User A (Owner) | User B (Attacker) | Expected | Actual |
 | Site 841 | /site/841/general | User 21 (Team 32) | User 15 (Team 28) | 403 | 403 ✓ |
+```
+
+#### Frontend/Backend Guard Asymmetry (Defense in Depth)
+
+A common vulnerability pattern: the frontend disables a button or adds a JS guard, but the backend API still accepts the request. An attacker can bypass the UI entirely by calling the API directly.
+
+For **every feature the UI disables, blocks, or hides**:
+1. Identify the corresponding backend API endpoint (check Vue component's axios/Inertia calls, or trace the route)
+2. Call the API endpoint directly using curl with valid authentication, bypassing the UI
+3. If the backend accepts the request when the frontend would block it, document it as a defense-in-depth gap
+
+**Example from real QA:** PHP 8.5's OPCache toggle was disabled in the UI (Switch component `:disabled` + JS `toggleOpcache()` early return), but `PHPVersionController::toggleOpcache()` had no version check — the API accepted the request if called directly.
+
+**In the report**, document each check:
+```
+| Feature | Frontend Guard | Backend Guard | API Route | Verdict |
+| OPCache toggle for PHP 8.5 | Switch disabled + JS early return | None | POST /api/server/{id}/php/opcache | Gap (Low) |
 ```
 
 #### Other Security Checks
@@ -323,6 +388,21 @@ Throughout testing, collect and organize:
 - **Network errors** via `browser_network_requests`
 - **Server logs**: via SSH `tail -n 200 {app-path}/storage/logs/laravel-$(date +%Y-%m-%d).log` after any 500 error
 - **Database state**: Tinker queries showing incorrect data
+
+## Step 6.5: Pre-Verdict Completeness Check (MANDATORY)
+
+Before writing the final verdict, verify you've completed every mandatory step. If any item is unchecked, **go back and complete it** before proceeding to the report.
+
+- [ ] **Core action executed end-to-end** — actually performed the PR's primary feature on staging (not just verified it appears in the UI)
+- [ ] **Server-side state verified** — after server operations, confirmed packages, config files, binaries, or services are in the expected state (via SSH or Command Runner)
+- [ ] **All code consumers searched** — used Grep/Explore to find every consumer of the changed code and verified each handles the change correctly (Section 1.2)
+- [ ] **Frontend/backend guard consistency checked** — for any UI-disabled/hidden feature, verified the backend API also blocks it (Section 4.6)
+- [ ] **Database/meta state verified** — used Tinker to confirm records, flags, and metadata are correct after actions
+- [ ] **At least 2 user roles tested** — tested with the primary user and at least one restricted role
+- [ ] **Console errors checked** — ran `browser_console_messages` on every page visited
+- [ ] **Server logs checked** — checked `laravel.log` after any unexpected error or 500 response
+
+A PASS verdict without completing all items is incomplete QA. The PR #3693 experience showed that "it appears in the UI" is not sufficient — you must verify the full chain from UI → API → server state.
 
 ## Step 7: Final Report
 
@@ -468,3 +548,7 @@ Track everything in the report's "Test Data Cleanup" table with ID, action taken
 - Check `browser_console_messages` on every page load for JS errors
 - Verify database state after important actions via Tinker
 - If a previous QA report exists for related features, cross-reference it for known issues
+- **End-to-end execution is mandatory**: never give a PASS verdict based only on "it appears in the UI" — actually perform the action and verify the full result chain (UI → API → server state)
+- **Server-side verification after server actions**: if the feature installs, configures, or modifies something on a server, verify the actual server state via SSH or Command Runner (packages, config files, binaries, services)
+- **Systematic codebase search is mandatory**: use Grep or Explore agents to find all consumers of changed code before writing the verdict — don't rely only on what's obvious from the PR diff
+- **Check guard symmetry**: for any UI-disabled or hidden feature, verify the backend API also blocks it — frontend-only guards are a defense-in-depth gap
