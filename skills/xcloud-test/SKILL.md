@@ -363,6 +363,40 @@ Based on what the PR touches, verify these platform patterns:
 - Heavy SSH script execution times
 - Excessive API calls visible in network requests
 
+### 4.10 Error Recovery / Failure Path Testing
+
+xCloud runs scripts on remote servers — operations fail in production. Test what happens when things go wrong:
+
+- **Mid-operation failure**: If applicable, simulate or observe what happens when a server operation fails (e.g., a script errors out, a service fails to restart). Does the status get stuck on "Installing" / "In progress", or does it correctly transition to "Failed"?
+- **Retry behavior**: After a failure, can the user retry the operation? Does it work correctly the second time, or does leftover state cause issues?
+- **UI feedback on failure**: Does the user see a clear error message, or does the page just hang? Check for proper error toasts, status badge updates, and log entries.
+- **Queue job failures**: Check the `failed_jobs` table via Tinker after operations — are there unexpected failures?
+  ```php
+  DB::table('failed_jobs')->latest()->first();
+  ```
+- **Graceful degradation**: If the PR adds a feature that depends on an external service or server state, what happens when that dependency is unavailable?
+
+### 4.11 State Transition Testing
+
+xCloud entities have status flows (server: `creating → active → suspended`, PHP version: `not_installed → installing → installed`, site: `creating → active`). Invalid transitions cause data corruption and stuck states.
+
+- **Duplicate action prevention**: Can you trigger the same action twice on a resource that's already in a transitional state? (e.g., click "Install" on a PHP version that's already "Installing")
+- **Button/UI state during transitions**: Are action buttons correctly disabled while an operation is in progress?
+- **Status consistency**: After an operation completes, does the status in the UI, database, and server meta all agree? Check via:
+  - UI: Playwright snapshot of status badges/labels
+  - Database: Tinker query on the model's status column
+  - Server meta: `$server->getServerInfo(...)` or `$model->getMeta(...)`
+- **Invalid state access**: Navigate directly to a URL that assumes a certain state (e.g., a site settings page for a site that's still "creating") — does it handle this gracefully?
+
+### 4.12 Idempotency / Double-Submit Testing
+
+Users double-click. Networks retry. Test that repeated actions don't cause duplicate side effects.
+
+- **Rapid double-click**: Click the primary action button twice rapidly — does it dispatch two jobs, create two records, or run two scripts? Use Playwright to click, then immediately click again before the page updates.
+- **Form resubmission**: Submit a form, use browser back, submit again — does it create a duplicate?
+- **Script idempotency**: If the PR modifies a server script, would running it twice break anything? Check if the script uses guards like `if [ -f ... ]` or `dpkg -l | grep` before installing.
+- **API replay**: Send the same API request twice in quick succession via curl — does the backend handle it correctly (idempotency key, duplicate check, or graceful no-op)?
+
 ## Step 5: Root Cause Analysis
 
 When you find a bug, don't stop at the symptom — trace it to the source code:
@@ -401,6 +435,8 @@ Before writing the final verdict, verify you've completed every mandatory step. 
 - [ ] **At least 2 user roles tested** — tested with the primary user and at least one restricted role
 - [ ] **Console errors checked** — ran `browser_console_messages` on every page visited
 - [ ] **Server logs checked** — checked `laravel.log` after any unexpected error or 500 response
+- [ ] **Failure paths considered** — tested or reasoned about what happens when the operation fails, and verified status doesn't get stuck
+- [ ] **Double-submit checked** — verified rapid clicks or form resubmission don't cause duplicate actions
 
 A PASS verdict without completing all items is incomplete QA. The PR #3693 experience showed that "it appears in the UI" is not sufficient — you must verify the full chain from UI → API → server state.
 
