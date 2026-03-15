@@ -157,7 +157,7 @@ When you find a bug, trace it to the source code:
 ## Step 6: Evidence Collection
 
 Throughout testing, collect and organize:
-- **Screenshots** saved to `qa-screenshots/` with sequential numbering
+- **Screenshots** saved to `qa-screenshots/` with sequential numbering — scroll to the specific element that shows the bug or fix before capturing. Before/after screenshots must be visually distinct. Capture toasts/notifications immediately before they auto-dismiss.
 - **Browser console errors** via `browser_console_messages`
 - **Network errors** via `browser_network_requests`
 - **Server logs** via SSH after any 500 error

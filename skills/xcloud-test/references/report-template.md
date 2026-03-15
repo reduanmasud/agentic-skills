@@ -55,7 +55,7 @@ routes added, permissions introduced, database changes, billing guards.
 
 **Actual Result:** {What actually happened — include exact error messages, HTTP status codes, or UI behavior}
 
-**Screenshot:**
+**Screenshot:** (must show the specific element demonstrating the bug — scroll to the evidence if below viewport)
 
 ![XX-description](qa-screenshots/XX-description.png)
 
@@ -74,9 +74,9 @@ requires real cloud provider API call", "Rate limiting — requires sustained
 load testing").
 
 ## Screenshots
-| # | Description | Preview |
-|---|-------------|---------|
-| 1 | Description | ![01-name](qa-screenshots/01-name.png) |
+| # | Description | What It Proves | Preview |
+|---|-------------|----------------|---------|
+| 1 | Description | What this screenshot demonstrates as evidence | ![01-name](qa-screenshots/01-name.png) |
 
 ## Test Data Cleanup
 | Item | Action | Status |

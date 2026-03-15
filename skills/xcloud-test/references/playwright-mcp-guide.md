@@ -119,12 +119,43 @@ Do NOT try to log out and log back in — closing the browser ensures a clean se
 
 **When to capture:**
 - Each major test step (evidence of PASS)
-- Every bug found (before and after if applicable)
+- Every bug found (before and after)
 - Before/after comparisons for UI changes
 - State transitions (installing → installed)
 - Error messages and validation feedback
 
 **Directory:** Always save to `qa-screenshots/` in the project root.
+
+### Capturing Evidence, Not Pages
+
+Screenshots are evidence — they must show the **specific element** that proves the bug or fix, not just the general page.
+
+**Scroll to the evidence first.** If the relevant element (error message, key list, status badge, changed data) is below the viewport, scroll it into view before taking the screenshot:
+```
+browser_evaluate: document.querySelector('.ssh-keys-list').scrollIntoView({behavior: 'instant', block: 'center'})
+browser_take_screenshot → now captures the actual evidence
+```
+
+**Capture at the right moment.** Transient elements like toast notifications auto-dismiss within seconds. Screenshot immediately after the action that triggers them — don't navigate or interact first:
+```
+browser_click → (triggers action)
+browser_take_screenshot → capture toast/success message NOW
+browser_snapshot → then continue testing
+```
+
+For state transitions, capture each state separately:
+```
+browser_take_screenshot → 04-php85-before-install.png (shows "Install" button)
+browser_click → click Install
+browser_take_screenshot → 05-php85-installing.png (shows "Installing" status)
+browser_wait_for → wait for completion
+browser_take_screenshot → 06-php85-installed.png (shows "Installed" badge)
+```
+
+**Before/after must be visually distinct.** If your "before" and "after" screenshots look identical, you captured the wrong area. The element that changed must be visible in both screenshots. If the change is in a list, table row, or section below the fold — scroll there before each capture.
+
+**Bad example:** Two screenshots of the top of a page — SSH key list (the bug) is cut off below the viewport in both.
+**Good example:** Both screenshots scrolled to the SSH key list — "before" shows unfiltered keys, "after" shows filtered keys.
 
 ## Error Detection Workflow
 
