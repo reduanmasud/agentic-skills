@@ -55,7 +55,9 @@ routes added, permissions introduced, database changes, billing guards.
 
 **Actual Result:** {What actually happened — include exact error messages, HTTP status codes, or UI behavior}
 
-**Screenshot:** `qa-screenshots/XX-description.png`
+**Screenshot:**
+
+![XX-description](qa-screenshots/XX-description.png)
 
 ## Regression Issues
 Previously working functionality that broke, or "No regression issues found."
@@ -72,9 +74,9 @@ requires real cloud provider API call", "Rate limiting — requires sustained
 load testing").
 
 ## Screenshots
-| # | Description | File |
-|---|-------------|------|
-| 1 | Description | `qa-screenshots/01-name.png` |
+| # | Description | Preview |
+|---|-------------|---------|
+| 1 | Description | ![01-name](qa-screenshots/01-name.png) |
 
 ## Test Data Cleanup
 | Item | Action | Status |
