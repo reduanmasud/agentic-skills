@@ -1,6 +1,6 @@
 ---
 name: xcloud-test
-description: Comprehensive QA testing of a Pull Request on the xCloud staging environment — smoke, sanity, regression, security, IDOR, API, multi-role, and performance testing with Playwright browser automation, root cause analysis, and a detailed report. Use when the user wants to QA test a PR, test a feature on staging, or verify a bug fix on the staging environment.
+description: Comprehensive QA testing of Pull Requests on the xCloud staging environment — smoke, sanity, regression, security (IDOR, guard asymmetry), API, multi-role, and performance testing with Playwright browser automation, SSH server verification, root cause analysis, and a detailed report. MUST use this skill whenever the user mentions: testing a PR on staging, QA testing, verifying a fix on staging, checking a feature on the staging server, running smoke/sanity/regression tests against a deployed PR, testing with multiple user roles on staging, checking IDOR or permissions on staging, or analyzing staging server performance. Also trigger when the user provides a PR number alongside any mention of "staging", "test", "QA", "verify", or "check". This is the go-to skill for any manual QA validation of deployed code — if the user wants to interact with a staging environment to validate PR changes, use this skill.
 user-invocable: true
 disable-model-invocation: true
 argument-hint: "[PR-number-or-URL]"
