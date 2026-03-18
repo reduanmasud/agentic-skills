@@ -27,6 +27,18 @@ Perform ALL applicable categories for every QA session. Skip a category only if 
 - API responses are correct (test via curl or Playwright network requests)
 - Compare actual behavior against what the PR description claims
 
+**Before/After context is required.** When reporting sanity test results, make it clear what was wrong before and what's working now. The reader should understand the improvement without having to read the PR diff.
+
+```
+### 4.2 Sanity Testing — PASS
+
+**Previous behavior:** Free-plan users could access the PHP 8.5 installer via direct URL, bypassing the billing guard. No upgrade prompt was shown.
+
+**After fix:** Free-plan users now see the upgrade prompt when navigating to the PHP version page. The billing guard middleware correctly blocks access.
+
+![Free user sees upgrade prompt on PHP version page](qa-screenshots/04-free-user-upgrade-prompt.png)
+```
+
 **Tip:** Read the PR description carefully. Test exactly what it claims to fix or add — this catches cases where the fix is incomplete or addresses a different problem than described.
 
 ## 4.3 Regression Testing
@@ -101,6 +113,28 @@ The difference between "PHP 8.5 shows an Install button" and "PHP 8.5 was instal
 
 **Command Runner shortcut:** Navigate to Server > Management > Commands in xCloud to run verification commands through the UI without SSH.
 
+## 4.5 API Testing
+
+> Full methodology is in `references/security-testing.md` — load it for auth testing, content type testing, pagination edge cases, and enterprise API specifics.
+
+If the PR introduces or modifies API endpoints, test:
+- **Authentication:** Valid token, no token, invalid token
+- **Validation:** Missing required fields, wrong types, boundary values
+- **Content type handling:** Wrong content types should return 415 or 422
+- **Pagination edge cases:** Negative page, huge per_page, page beyond range
+- **Enterprise API:** If applicable, test enterprise-specific routes and response format
+
+## 4.6 Security Testing
+
+> Full methodology is in `references/security-testing.md` — load it for IDOR methodology, guard asymmetry testing, XSS payloads, CSRF verification, and policy testing via Tinker.
+
+For every PR, check at minimum:
+- **IDOR:** Can User B access User A's resources by changing IDs in URLs?
+- **Guard asymmetry:** For every UI-disabled feature, does the backend API also block it?
+- **Input sanitization:** Test XSS payloads in all text fields touched by the PR
+- **Sensitive data exposure:** Check API responses don't leak passwords, tokens, or full keys
+- **Authorization policies:** Verify policy methods via Tinker for affected models
+
 ## 4.7 xCloud-Specific Checks
 
 Based on what the PR touches, verify these platform patterns:
@@ -141,6 +175,7 @@ Based on what the PR touches, verify these platform patterns:
 - Confusing navigation or missing breadcrumbs
 - Unclear error messages (raw exception text vs. user-friendly message)
 - Missing loading states or feedback after actions
+- **Table sorting:** If a table has sortable columns, click **every** sortable column header to verify ascending/descending sort works correctly. Different data types (strings, dates, numbers, statuses) can have different sorting bugs — don't just check one column and move on
 - Pagination: uses ellipsis for large page counts, correct page sizes
 - Responsive behavior if applicable
 - Accessibility: buttons have labels, form fields have labels
@@ -156,7 +191,9 @@ Based on what the PR touches, verify these platform patterns:
 
 ## 4.10 Error Recovery / Failure Path Testing
 
-xCloud runs scripts on remote servers — operations fail in production. Test what happens when things go wrong:
+xCloud runs scripts on remote servers — operations fail in production. Users expect clear feedback and a way to recover. Test what happens when things go wrong.
+
+### General Failure Patterns
 
 - **Mid-operation failure:** If applicable, simulate or observe what happens when a server operation fails. Does the status get stuck on "Installing" / "In progress", or does it correctly transition to "Failed"?
 - **Retry behavior:** After a failure, can the user retry? Does it work correctly the second time, or does leftover state cause issues?
@@ -166,6 +203,21 @@ xCloud runs scripts on remote servers — operations fail in production. Test wh
   DB::table('failed_jobs')->latest()->first();
   ```
 - **Graceful degradation:** If the feature depends on an external service or server state, what happens when that dependency is unavailable?
+
+### xCloud-Specific Failure Scenarios
+
+These are the real-world failures xCloud users hit. If the PR touches any of these areas, test the failure path:
+
+| Scenario | What to check | How to verify |
+|----------|---------------|---------------|
+| **SSH timeout during script execution** | Does the status get stuck, or does it timeout gracefully? Does the UI show a meaningful error? | Check `failed_jobs` table and `laravel.log` for timeout exceptions |
+| **Partial script execution** | If a script installs packages but fails on config, is the state consistent? Can the user retry without duplicating what already succeeded? | SSH to check what was installed vs. what was configured; check model status in Tinker |
+| **Queue job timeout** | Long-running jobs (package installs, backups) may exceed the queue timeout. Does the job get retried or marked as failed? | `DB::table('failed_jobs')->latest()->first()` — check the exception message for timeout |
+| **Server provisioning failure** | If server creation fails partway, is the server record cleaned up or left in a stuck "creating" state? | Check `$server->status` in Tinker; verify the UI shows a clear failure state |
+| **DNS propagation delays** | Site creation may succeed in the database but DNS isn't ready yet. Does the UI handle the interim state? | Navigate to the site immediately after creation — it should show a pending/propagating status, not a broken page |
+| **SSL certificate failures** | Let's Encrypt rate limits, DNS not ready, or domain validation fails. Does the error surface clearly? | Check the SSL status in UI and `laravel.log` for certificate-related errors |
+| **Concurrent operations on same server** | Two operations dispatched to the same server simultaneously. Does the queue handle ordering, or do scripts collide? | Trigger two actions quickly and check if both complete or if one fails with a lock/conflict error |
+| **Disk space exhaustion** | Backup or log rotation fills the disk. Does the operation fail gracefully? | Check `df -h` on the server after heavy operations |
 
 ## 4.11 State Transition Testing
 

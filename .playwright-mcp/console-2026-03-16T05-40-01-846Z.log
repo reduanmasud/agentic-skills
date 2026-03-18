@@ -1,0 +1,4 @@
+[    2846ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://s1.tmp1.dev/nova/login:0
+[    4770ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://s1.tmp1.dev/api/server-list?page=1&per_page=18:0
+[    4772ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://s1.tmp1.dev/api/navigation-store:0
+[    4773ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://s1.tmp1.dev/api/site-list?page=1&per_page=18:0

@@ -13,6 +13,21 @@ Ask the user for ALL of these before starting. Do NOT assume or hardcode values.
 | **Free/restricted test account** | Email + password for billing guard and permission testing |
 | **Whitelabel URL** (if relevant) | For testing whitelabel-scoped features |
 
+## Single vs. Multi-Environment Setup
+
+When testing multiple PRs, environment info can be gathered in two ways:
+
+| Mode | When to use | How it works |
+|------|------------|--------------|
+| **Single environment** | All PRs deploy to the same staging server | Gather environment info (URL, SSH, app path, credentials) once and reuse for every PR |
+| **Multiple environments** | Each PR has its own staging server | Ask for separate environment info per PR before testing it |
+| **Single PR** (default) | Only one PR to test | No special handling — gather info once and proceed |
+
+For single-environment multi-PR testing, be aware that:
+- Each PR deployment overwrites the previous one on the same server
+- Migrations from one PR may affect subsequent PRs
+- Test data cleanup (Step 8) must run between PRs to avoid collisions
+
 ## Cache Clearing
 
 Run before starting any testing to ensure you're testing the latest deployed code:
@@ -20,6 +35,66 @@ Run before starting any testing to ensure you're testing the latest deployed cod
 ```bash
 ssh {user}@{host} "cd {app-path} && php artisan config:clear && php artisan cache:clear && php artisan route:clear && php artisan view:clear"
 ```
+
+## Deploying a PR Branch to the Staging Server
+
+After local checkout (`gh pr checkout <PR_NUMBER>`), deploy the branch to the staging server:
+
+### 1. Get the Branch Name
+
+```bash
+gh pr view <PR_NUMBER> --json headRefName -q '.headRefName'
+```
+
+### 2. Deploy via SSH
+
+```bash
+ssh {user}@{host} "cd {app-path} && git fetch origin && git checkout {branch} && git pull origin {branch}"
+```
+
+If the server has uncommitted changes:
+```bash
+ssh {user}@{host} "cd {app-path} && git stash && git fetch origin && git checkout {branch} && git pull origin {branch}"
+```
+
+If the branch checkout fails due to merge conflicts, report the conflict to the user and skip this PR.
+
+### 3. Post-Deploy Steps
+
+After checking out the branch, run these in order:
+
+```bash
+# Always: clear all caches
+ssh {user}@{host} "cd {app-path} && php artisan config:clear && php artisan cache:clear && php artisan route:clear && php artisan view:clear"
+
+# Always: run pending migrations
+ssh {user}@{host} "cd {app-path} && php artisan migrate"
+```
+
+Conditionally run these based on which files the PR changed:
+
+```bash
+# Check what files changed
+gh pr diff <PR_NUMBER> --name-only
+```
+
+| Files changed | Action |
+|--------------|--------|
+| `composer.json` or `composer.lock` | `ssh {user}@{host} "cd {app-path} && composer install --no-interaction"` |
+| Any file in `resources/js/`, `resources/css/`, `package.json`, or `package-lock.json` | `ssh {user}@{host} "cd {app-path} && npm install && npm run build"` |
+| Neither | Skip — no dependency or frontend changes |
+
+### 4. Verify Deployment
+
+```bash
+# Confirm the correct branch and commit are deployed
+ssh {user}@{host} "cd {app-path} && git branch --show-current && git log --oneline -1"
+
+# Compare with the PR's head commit
+gh pr view <PR_NUMBER> --json headRefName,headRefOid -q '"\(.headRefName) \(.headRefOid)"'
+```
+
+The branch name and commit hash should match. If they don't, the deployment failed — investigate before proceeding.
 
 ## Migration Management
 

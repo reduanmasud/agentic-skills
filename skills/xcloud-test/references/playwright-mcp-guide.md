@@ -79,6 +79,8 @@ When switching between user roles:
 
 Do NOT try to log out and log back in — closing the browser ensures a clean session.
 
+**End-of-testing close:** The browser is also closed at the end of all testing (Step 6.7 in SKILL.md) before the report is written. This is separate from role-switching closes during testing.
+
 ## xCloud UI Patterns
 
 ### Inertia.js Page Transitions
@@ -156,6 +158,25 @@ browser_take_screenshot → 06-php85-installed.png (shows "Installed" badge)
 
 **Bad example:** Two screenshots of the top of a page — SSH key list (the bug) is cut off below the viewport in both.
 **Good example:** Both screenshots scrolled to the SSH key list — "before" shows unfiltered keys, "after" shows filtered keys.
+
+## Waiting & Timing — Which Tool to Use
+
+Choosing the wrong wait strategy is the most common source of flaky interactions. Use this table:
+
+| Situation | Tool | Example |
+|-----------|------|---------|
+| Page navigation (full URL change) | `browser_wait_for` with URL | After clicking a nav link, wait for URL to contain `/dashboard` |
+| Inertia page transition (no full reload) | `browser_wait_for` with text | After Inertia visit, wait for expected heading text to appear |
+| Action completes with toast/message | `browser_take_screenshot` immediately | After clicking Submit, screenshot NOW before toast auto-dismisses |
+| Element below viewport needs capturing | `browser_evaluate` scroll, then screenshot | `document.querySelector('.target').scrollIntoView({block:'center'})` |
+| Need to interact with new DOM elements | `browser_snapshot` | After any DOM mutation, re-snapshot to get fresh refs |
+| Async operation (install, deploy) | `browser_wait_for` with text + polling | Wait for status text to change from "Installing" to "Installed" |
+| Page seems stuck or loading | `browser_wait_for` with network idle | Wait for all network requests to settle |
+| Modal/dialog needs to open fully | `browser_snapshot` after a beat | Trigger the modal, then snapshot to get modal element refs |
+
+**Key rule:** After every interaction that changes the DOM, you need a fresh `browser_snapshot` before the next interaction. Refs from the old snapshot are stale and will fail.
+
+**Common mistake:** Using `browser_wait_for` when you should just `browser_snapshot`. If the page has already changed (you can tell because the interaction succeeded), just snapshot — don't wait for something that already happened.
 
 ## Error Detection Workflow
 
