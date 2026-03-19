@@ -69,15 +69,43 @@ browser_wait_for → URL no longer contains "/login"
 browser_snapshot → verify dashboard loaded
 ```
 
+### Logout Flow
+
+To log out of the current session:
+
+1. **Click on the profile/avatar** — look for the user's name or avatar in the top-right corner of the page
+2. `browser_snapshot` → find the profile menu element ref
+3. `browser_click` → click the profile/avatar ref
+4. `browser_snapshot` → find the "Log Out" or "Logout" option in the dropdown menu
+5. `browser_click` → click the Logout ref
+6. `browser_wait_for` → wait for URL to contain `/login` (redirect to login page)
+7. `browser_snapshot` → verify you're on the login page
+
+```
+browser_snapshot → find profile/avatar ref in top-right
+browser_click → click profile/avatar
+browser_snapshot → find "Log Out" menu item
+browser_click → click Log Out
+browser_wait_for → URL contains "/login"
+browser_snapshot → verify login page
+```
+
 ### Multi-Account Testing
 
-When switching between user roles:
+When switching between user roles, choose the appropriate method:
+
+**Option A: Logout and re-login (preferred for testing logout behavior)**
+1. Follow the **Logout Flow** above to log out
+2. Authenticate as the new user on the login page
+3. Track which screenshots belong to which role (include role in screenshot name)
+
+**Option B: Close browser (guaranteed clean session)**
 1. **Close the browser** with `browser_close`
 2. Navigate to the login page fresh
 3. Authenticate as the new user
 4. Track which screenshots belong to which role (include role in screenshot name)
 
-Do NOT try to log out and log back in — closing the browser ensures a clean session.
+Use **Option A** when you need to verify logout works or want to test session cleanup. Use **Option B** when you need a guaranteed clean slate (clears cookies, localStorage, all session state).
 
 **End-of-testing close:** The browser is also closed at the end of all testing (Step 6.7 in SKILL.md) before the report is written. This is separate from role-switching closes during testing.
 
@@ -113,6 +141,49 @@ Do NOT try to log out and log back in — closing the browser ensures a clean se
 - Sub-navigation uses tabs within pages
 
 ## Screenshot Management
+
+### Cloudinary Upload (Preferred When Available)
+
+**Before taking any screenshots**, check if all 3 Cloudinary env vars are set:
+
+```bash
+# Check all 3 required Cloudinary env vars
+echo "CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME:-(not set)}"
+echo "CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY:-(not set)}"
+echo "CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET:-(not set)}"
+```
+
+If ALL three — `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` — are set, **upload every screenshot to Cloudinary** after capturing and use the returned URL in the report. This makes reports readable on GitHub without local file paths.
+
+If any of the 3 vars is missing, fall back to local paths: `![alt](qa-screenshots/XX-description.png)`
+
+**Upload command (run after each screenshot):**
+```bash
+curl -s -X POST "https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload" \
+  -F "file=@qa-screenshots/XX-description.png" \
+  -F "upload_preset=ml_default" \
+  -F "folder=qa-reports" \
+  -F "api_key=${CLOUDINARY_API_KEY}" \
+  -F "timestamp=$(date +%s)" \
+  -F "signature=$(echo -n "folder=qa-reports&timestamp=$(date +%s)&upload_preset=ml_default${CLOUDINARY_API_SECRET}" | shasum -a 256 | head -c 64)" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['secure_url'])"
+```
+
+**If signed upload fails**, fall back to unsigned upload:
+```bash
+curl -s -X POST "https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload" \
+  -F "file=@qa-screenshots/XX-description.png" \
+  -F "upload_preset=ml_default" \
+  -F "folder=qa-reports" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['secure_url'])"
+```
+
+**In the report, use the Cloudinary URL:**
+```markdown
+![Dashboard smoke test](https://res.cloudinary.com/xxxx/image/upload/v1234/qa-reports/01-dashboard-smoke.png)
+```
+
+### Naming Convention
 
 **Naming convention:** `qa-screenshots/XX-description.png`
 - Sequential numbering: `01-`, `02-`, etc.

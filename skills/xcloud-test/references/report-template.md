@@ -9,7 +9,12 @@
 
 Screenshots are useless if readers have to go hunting for them in a folder. Embed every screenshot inline using markdown image syntax — right where it's relevant, not just as a filename or path.
 
-**Correct (embedded inline):**
+**Correct — Cloudinary URL (preferred when `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` are all set):**
+```markdown
+![Login page showing error banner](https://res.cloudinary.com/xxxx/image/upload/v1234/qa-reports/03-login-error.png)
+```
+
+**Correct — local path (fallback when Cloudinary is not available):**
 ```markdown
 ![Login page showing error banner](qa-screenshots/03-login-error.png)
 ```
@@ -92,28 +97,38 @@ Use this exact table format:
 
 ### Section 4: Tests Performed
 
-One subsection per test category performed. Each subsection heading must include the category number and a PASS/FAIL verdict.
+Each test category must include a **test case table** with evidence for every test case. Bullet lists without evidence are incomplete — every PASS and FAIL needs proof from staging.
 
 ```
 ## Tests Performed
 
 ### 4.1 Smoke Testing — PASS
-- Login page loads correctly
-- Dashboard renders without errors
-- [embed screenshot if visual evidence is relevant]
 
-![Dashboard loaded successfully](qa-screenshots/01-dashboard-smoke.png)
+| # | Test Case | Expected | Actual | Evidence | Verdict |
+|---|-----------|----------|--------|----------|---------|
+| 1 | Login page loads | Login form visible | Form rendered correctly | ![Login](qa-screenshots/01-login.png) | PASS |
+| 2 | Dashboard loads | Shows servers and sites | All data visible | ![Dashboard](qa-screenshots/02-dashboard.png) | PASS |
+| 3 | No console errors | Clean console | 0 errors | `browser_console_messages`: clean | PASS |
 
 ### 4.2 Sanity Testing — PASS
-...
 
-### 4.3 Regression Testing — PASS
-...
+| # | Test Case | Expected | Actual | Evidence | Verdict |
+|---|-----------|----------|--------|----------|---------|
+| 1 | Feature works as described | [per PR] | [result] | [screenshot/SSH output] | PASS |
 ```
 
-Continue for every category tested (4.1 through 4.12). For categories skipped as irrelevant, do not include a subsection — just note them in "Areas Not Fully Tested" later.
+**Evidence types by test category:**
 
-When a test result has visual evidence, embed the screenshot inline right after the result line — not at the end of the section.
+| Category | Primary Evidence |
+|----------|-----------------|
+| Smoke/Sanity | Screenshots + console checks |
+| Regression | Screenshots of related features still working |
+| Security (IDOR) | curl response showing 403 + screenshot of blocked access |
+| End-to-End | Screenshots + SSH/Command Runner output + Tinker queries |
+| API | curl response bodies with HTTP status codes |
+| Performance | Network request timing from `browser_network_requests` |
+
+Continue for every category tested (4.1 through 4.12). For categories skipped as irrelevant, do not include a subsection — just note them in "Areas Not Fully Tested" later.
 
 ### Section 5: Bugs Found
 
@@ -238,6 +253,7 @@ Before saving the report, verify every item below. If any item fails, go back an
 - [ ] **Every bug has all required fields** — Severity, Summary, Root Cause (file + line), Steps to Reproduce, Tool used, Expected Result, Actual Result, embedded Screenshot
 - [ ] **Every bug has a root cause** — file path and line number, not just "something is wrong"
 - [ ] **Screenshots table is populated** — every screenshot taken during testing appears in the summary table with `![alt](path)` in Preview
+- [ ] **Every test case has evidence** — each row in the test case tables has an Evidence column with a screenshot, SSH/Command Runner output, or Tinker query result — not code review
 - [ ] **Test category verdicts are present** — every tested category heading ends with "— PASS" or "— FAIL"
 - [ ] **Cleanup table is filled** — either cleanup records or "No test data was created"
 - [ ] **Final verdict has reasoning** — not just "PASS" but why, referencing specific findings

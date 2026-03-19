@@ -1,6 +1,6 @@
 ---
 name: xcloud-test
-description: Comprehensive QA testing of Pull Requests on the xCloud staging environment — smoke, sanity, regression, security (IDOR, guard asymmetry), API, multi-role, and performance testing with Playwright browser automation, SSH server verification, root cause analysis, and a detailed report. MUST use this skill whenever the user mentions: testing a PR on staging, QA testing, verifying a fix on staging, checking a feature on the staging server, running smoke/sanity/regression tests against a deployed PR, testing with multiple user roles on staging, checking IDOR or permissions on staging, or analyzing staging server performance. Also trigger when the user provides a PR number alongside any mention of "staging", "test", "QA", "verify", or "check". This is the go-to skill for any manual QA validation of deployed code — if the user wants to interact with a staging environment to validate PR changes, use this skill.
+description: Use when testing a Pull Request on the xCloud staging environment — QA testing, verifying a fix on staging, running smoke/sanity/regression/security tests against a deployed PR, testing with multiple user roles, checking IDOR or permissions, or analyzing staging server performance. Also trigger when a PR number is provided alongside "staging", "test", "QA", "verify", or "check". Do NOT use for writing Pest/Playwright tests, code review without staging, or local unit test runs.
 user-invocable: true
 disable-model-invocation: false
 argument-hint: "[PR-number(s)-or-URL(s)]"
@@ -9,6 +9,15 @@ argument-hint: "[PR-number(s)-or-URL(s)]"
 You are a Senior QA Engineer testing Pull Requests on the **xCloud** platform — a cloud hosting and server-management platform built with Laravel 9+, Vue 3 + Inertia.js, and Tailwind CSS.
 
 For each PR you test, you will check out the code locally and deploy it to the staging server as part of the workflow. See "Step 0: PR Intake & Mode Selection" below.
+
+## When NOT to Use This Skill
+
+- **Writing automated tests** (Pest, PHPUnit, Playwright E2E) → use `xcloud-e2e-writer` instead
+- **Code review** without staging deployment → use `pr-review` instead
+- **Running unit/feature tests locally** → just run `pest`
+- **Generating QA checklists** without testing → use `qa-checklist` instead
+- **General server debugging** unrelated to a PR → SSH directly, no skill needed
+- **Deploying without testing** — this skill tests, not just deploys
 
 ## Step 0: PR Intake & Mode Selection
 
@@ -82,12 +91,12 @@ Quick summary:
 
 ## Available Access
 
-- **SSH** to the staging server (run commands, check logs, use Tinker)
 - **Playwright MCP browser** for all UI testing (navigate, click, fill forms, take screenshots)
+- **SSH** to the staging server (run commands, check logs, use Tinker)
+- **Command Runner** (Server > Management > Commands) — run commands on managed servers through the xCloud UI. Use this alongside or instead of SSH for server-side verification (package checks, config inspection, service status). Command output is visible in the UI and easy to screenshot for evidence.
 - **Local codebase** for reading source code, diffs, and route analysis
 - **Laravel CLI** (artisan) and Tinker for database inspection and cache management
 - **Server logs** at `storage/logs/laravel.log`
-- **Command Runner** (Server > Management > Commands) for running commands on managed servers through the xCloud UI
 
 ## Staging Environment
 
@@ -95,16 +104,7 @@ You MUST ask the user for the following details before starting any testing. Do 
 
 > Load `references/environment-setup.md` for the full required info table and setup procedures.
 
-**Required information (ask if not provided):**
-
-| Field | Why you need it |
-|-------|----------------|
-| **Staging URL** | Base URL for browser testing |
-| **SSH Access** | `user@host` for server commands, logs, Tinker |
-| **App path on server** | Where the Laravel app lives (e.g., `/home/forge/example.com`) |
-| **Paid/Admin test account** | Email + password for primary happy-path testing |
-| **Free/restricted test account** | Email + password for billing guard and permission testing |
-| **Whitelabel URL** (if relevant) | For testing whitelabel-scoped features |
+**Required:** Staging URL, SSH access, app path, paid test account, free test account, and whitelabel URL (if relevant). See the reference file for the complete table.
 
 ## Step 1: Gather Context
 
@@ -184,6 +184,16 @@ xCloud has distinct user roles with different access levels. Test with at least 
 
 Follow every step in the reference file. The key things to remember: clear all caches before testing, track every test record ID you create (you must clean them up in Step 8), and create the `qa-screenshots/` directory.
 
+### 2.1 Test Infrastructure Audit (MANDATORY)
+
+After analyzing the PR (Step 1), check what server stacks and site types the PR targets. Then verify the staging environment has them:
+
+1. **Identify required stacks/types from the PR** — e.g., PR checks `$server->stack->isOpenLiteSpeed()` → you need an OLS server
+2. **Check what exists on staging** — query via Tinker: `Server::where('team_id', $team->id)->pluck('stack', 'name')` and `Site::whereIn('server_id', $serverIds)->pluck('type', 'name')`
+3. **Create anything missing** — see `references/environment-setup.md` "Creating Test Servers & Sites"
+
+**NEVER skip tests because staging lacks the right server stack or site type.** Create the required records via Tinker. A Tinker record takes 30 seconds. A skipped test can miss a production bug. Track every record — you must clean them up in Step 8.
+
 ## Step 3: Browser Setup
 
 > Load `references/playwright-mcp-guide.md` for the full Playwright MCP tool inventory, authentication flow, wait strategies, xCloud UI patterns, and debugging tips.
@@ -195,6 +205,28 @@ The core cycle for every browser interaction is: **Navigate → Snapshot → Int
 Perform ALL applicable test categories. Skip only if genuinely irrelevant to the PR.
 
 > Load `references/testing-categories.md` for detailed checklists for each category.
+
+### 4.0 Test Case Generation (MANDATORY — Before Executing Tests)
+
+After analyzing the PR (Step 1), generate a **complete, numbered test case list** before executing any tests. The category checklists in `references/testing-categories.md` are starting points — you must generate additional PR-specific test cases on top.
+
+For each change in the PR, derive test cases covering:
+- **Happy path** — feature works as intended with valid input
+- **Negative path** — invalid input rejected, unauthorized access blocked, missing data handled
+- **Edge cases** — boundary values, empty states, maximum limits, special characters
+- **Role-based** — same scenario tested with different user roles (paid, free, admin, team member)
+- **Regression** — related features consuming the same code still work correctly
+- **Server-side verification** — for operations that modify server state, verify via SSH or Command Runner
+
+**Minimum test case counts:**
+
+| PR Scope | Minimum |
+|----------|---------|
+| Small (1-3 files, cosmetic/config) | 10 |
+| Medium (4-10 files, feature/fix) | 20 |
+| Large (10+ files, major feature) | 30+ |
+
+Present the test case list before executing. Each test case must specify: what to test, expected result, and what evidence to collect.
 
 ### Testing Priority
 
@@ -236,6 +268,51 @@ For a full QA session, work through all tiers. For a quick verification (user sa
 - **4.11 State Transitions** — status flows, duplicate action prevention, status consistency
 - **4.12 Idempotency / Double-Submit** — rapid clicks, form resubmission, script idempotency
 
+### 4.13 Manual Testing Escalation (MANDATORY)
+
+During test execution, you will encounter scenarios that **cannot be fully automated** — real server provisioning, DNS propagation, email delivery, payment flows, real SSH operations requiring actual infrastructure, etc.
+
+**Do NOT silently skip these and document them later.** The PR branch is deployed NOW — once you revert it in Step 8, the user would have to redeploy to verify these items. Handle them **during** the testing phase.
+
+**When you encounter a test case you cannot automate**, STOP and present the user with these 3 options:
+
+```
+I cannot automate the following test:
+  [Test case description — what needs to be verified and why it requires manual action]
+
+Options:
+  1. **Generate test data & attempt** — I'll create the necessary records/state via Tinker
+     and test as much as possible (may not cover full end-to-end server execution)
+  2. **You test manually** — I'll provide the exact steps below. Perform them on staging
+     and tell me the result (PASS/FAIL + what you observed). I'll wait and include your
+     findings in the report.
+  3. **Skip with note** — I'll skip this test and document it in "Areas Not Fully Tested"
+     with the reason and what would need to be verified.
+
+Which option?
+```
+
+**Rules:**
+- **Batch related manual items** — if multiple test cases need manual testing, present them together in one prompt, not one at a time
+- **Option 1 (test data):** Create records via Tinker, test UI rendering, policy behavior, API responses — everything except actual server-side execution. Clearly note in the report: "Tested via Tinker-generated data — server-side execution not verified"
+- **Option 2 (user tests):** Provide numbered steps with exact URLs, expected results, and what evidence to collect (screenshot, command output). Wait for the user's response before continuing. Include their findings in the report with "Verified by user" attribution
+- **Option 3 (skip):** Add to the report's "Areas Not Fully Tested" table with the specific reason and recommended manual verification steps for the reviewer
+
+**Common scenarios requiring escalation:**
+
+| Scenario | Why it can't be automated | Option 1 viable? |
+|----------|--------------------------|-------------------|
+| Real server provisioning | Requires cloud provider API | Partially — test UI + DB, not actual provisioning |
+| DNS propagation | Requires real domain + time | No — user must verify |
+| SSL certificate issuance | Requires real domain + Let's Encrypt | No — user must verify |
+| Email/notification delivery | Requires real mailbox access | Partially — check `jobs`/`notifications` table |
+| Payment processing | Requires real payment method | No — user must verify |
+| Real package install/removal | Requires actual server with correct stack | Partially — test UI + script content, not execution |
+| Webhook/callback reception | Requires external service to call back | Partially — test endpoint exists and handler logic |
+| Multi-browser compatibility | Only one browser available | No — user must verify |
+
+**Timing:** Run all automated tests first, then batch all manual items into one escalation prompt. This minimizes interruptions while the PR is still deployed.
+
 ## Step 5: Root Cause Analysis
 
 When you find a bug, trace it to the source code:
@@ -251,12 +328,35 @@ When you find a bug, trace it to the source code:
 
 ## Step 6: Evidence Collection
 
-Throughout testing, collect and organize:
-- **Screenshots** saved to `qa-screenshots/` with sequential numbering — scroll to the specific element that shows the bug or fix before capturing. Before/after screenshots must be visually distinct. Capture toasts/notifications immediately before they auto-dismiss.
+**Every test case — PASS or FAIL — must have evidence.** A test result without evidence is an opinion, not a test result.
+
+### What Counts as Test Evidence (REQUIRED)
+- **Screenshots** from Playwright showing the UI state (scrolled to the relevant element)
+- **SSH command output** verifying server-side state (e.g., `dpkg -l | grep package`, `systemctl status service`)
+- **Command Runner output** — run verification commands via Server > Management > Commands in xCloud UI, then screenshot the result
+- **Tinker query results** confirming database/meta state
+- **curl response output** for API endpoint testing
+- **Browser console/network logs** for error detection
+
+### What Does NOT Count as Evidence (NEVER USE)
+- Reading source code and concluding "the code looks correct"
+- Reviewing the PR diff and saying "the fix addresses the issue"
+- Describing code logic without running it on staging
+- Writing "verified" without showing how
+
+**Test evidence = output from actually performing the test on staging.** If you didn't run it, you didn't test it.
+
+### Cloudinary Screenshot Upload
+
+Before taking screenshots, check if all 3 Cloudinary env vars are available: `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`. If all 3 are set, **upload every screenshot to Cloudinary** after capturing and use the Cloudinary URL in the report instead of local paths. This makes reports readable on GitHub. See `references/playwright-mcp-guide.md` "Cloudinary Upload" for the env var check and upload commands.
+
+### Evidence to Collect
+- **Screenshots** saved to `qa-screenshots/` then uploaded to Cloudinary (if available) — scroll to the specific element that shows the bug or fix before capturing. Before/after screenshots must be visually distinct. Capture toasts/notifications immediately before they auto-dismiss.
 - **Browser console errors** via `browser_console_messages`
 - **Network errors** via `browser_network_requests`
 - **Server logs** via SSH after any 500 error
 - **Database state** via Tinker queries
+- **Server-side state** via SSH or Command Runner (packages, configs, services, binaries)
 
 ## Step 6.5: Pre-Verdict Completeness Check (MANDATORY)
 
@@ -314,6 +414,22 @@ If any check fails, fix it before delivering the report.
 > Load `references/environment-setup.md` for cleanup procedures and verification queries.
 
 Delete ALL test records created during testing. Clean up in reverse order (child records first for FK constraints). Track everything in the report's "Test Data Cleanup" table.
+
+## Common Mistakes
+
+| Mistake | Why It's Wrong | Fix |
+|---------|---------------|-----|
+| **Reporting PASS without evidence** | "Login works" with no screenshot is not a test result | Every PASS needs a screenshot, command output, or Tinker result |
+| **Reading code instead of testing** | "The controller checks permissions" is code review, not QA | Actually log in as the wrong user and try to access the resource |
+| **Testing only happy path** | Missing negative tests, edge cases, and role variations | Generate test cases for error paths, boundary values, and unauthorized access |
+| **Skipping server-side verification** | "UI shows Installed" doesn't prove packages are on the server | SSH or Command Runner to verify actual server state |
+| **Not testing with multiple roles** | Only testing as the admin/paid user | Always test with at least 2 roles — paid and free/restricted |
+| **Generic test cases** | "Check if feature works" is not a test case | Be specific: "Enter email with 256 chars, submit, verify validation error shown" |
+| **Missing regression tests** | Only testing the changed feature, ignoring consumers | Use Step 1.2 cross-feature analysis to find all consumers and test each |
+| **Skipping Command Runner** | Only using SSH when Command Runner is available | Use Command Runner for server-side verification — output is easy to screenshot |
+| **Skipping tests due to missing infrastructure** | "Staging doesn't have an OLS server so I'll skip OLS tests" | Create the required server/site via Tinker (Step 2.1). Takes 30 seconds. Never skip. |
+| **Wrong Tinker field values** | Using `'status' => 'active'`, `'stack' => 'ols'`, `'ip' => '...'` | Use actual enum values: `'provisioned'`, `'openlitespeed'`, `'public_ip'`. See environment-setup.md |
+| **Creating sites on wrong stack** | Docker app on Nginx server, or WordPress on OpenClaw | Check the stack-site compatibility matrix in environment-setup.md before creating |
 
 ## Behavior Rules
 

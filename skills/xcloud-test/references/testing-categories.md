@@ -2,6 +2,22 @@
 
 Perform ALL applicable categories for every QA session. Skip a category only if it is genuinely irrelevant to the PR (e.g., no API endpoints → skip API testing).
 
+## Evidence Requirement (Applies to ALL Categories)
+
+**Every test case must produce evidence.** Use this format in the report:
+
+| # | Test Case | Expected | Actual | Evidence | Verdict |
+|---|-----------|----------|--------|----------|---------|
+| 1 | Login page loads correctly | Login form visible | Form rendered | ![Login](qa-screenshots/01-login.png) | PASS |
+| 2 | PHP packages installed on server | lsphp85 packages present | 14 packages found | SSH: `dpkg -l \| grep lsphp85` | PASS |
+| 3 | Free user blocked from feature | Upgrade prompt shown | 500 error instead | ![500 error](qa-screenshots/05-error.png) | FAIL |
+
+**Evidence types:** Screenshots, SSH/Command Runner output, Tinker query results, curl responses, browser console/network logs. Code review is NOT evidence.
+
+## Test Case Generation
+
+The checklists below are **starting points** — generate additional PR-specific test cases. For each changed file/feature, create test cases for: happy path, error path, edge cases, role variations, and regression of related features. See Step 4.0 in SKILL.md for minimum counts.
+
 ## 4.1 Smoke Testing
 
 **Purpose:** Verify the application is stable and not broken by the PR.

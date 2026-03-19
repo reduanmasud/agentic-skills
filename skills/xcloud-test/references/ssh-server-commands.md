@@ -215,14 +215,17 @@ find /var/www/site-name -name "*.conf" -type f
 df -h /var/www/
 ```
 
-## Command Runner Alternative
+## Command Runner (xCloud UI)
 
-Instead of SSH, you can use the xCloud UI: **Server > Management > Commands**
+In addition to SSH, use the xCloud Command Runner: **Server > Management > Commands**
 
-This runs commands on the managed server through the xCloud platform. Useful for:
-- Quick verification without SSH setup
-- Running commands when SSH access is not available
-- Documenting command output in screenshots (visible in the UI)
+This runs commands on the managed server through the xCloud platform. Use it for:
+- **Server-side verification** — check packages, configs, services after operations
+- **Evidence collection** — command output is visible in the UI, easy to screenshot for QA reports
+- **When SSH is unavailable** — alternative access path for server commands
+- **Quick checks** — faster than establishing a new SSH connection for single commands
+
+**Recommended workflow:** Use Command Runner for quick verification checks during testing. Use SSH for longer sessions (Tinker, log analysis, multi-step debugging).
 
 ## Log Analysis
 
