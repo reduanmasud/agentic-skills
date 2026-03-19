@@ -217,15 +217,9 @@ df -h /var/www/
 
 ## Command Runner (xCloud UI)
 
-In addition to SSH, use the xCloud Command Runner: **Server > Management > Commands**
+> For the complete Command Runner guide — including step-by-step Playwright browser workflow, the verification matrix mapping UI operations to verification commands, and operational recipes — load `references/server-verification.md`.
 
-This runs commands on the managed server through the xCloud platform. Use it for:
-- **Server-side verification** — check packages, configs, services after operations
-- **Evidence collection** — command output is visible in the UI, easy to screenshot for QA reports
-- **When SSH is unavailable** — alternative access path for server commands
-- **Quick checks** — faster than establishing a new SSH connection for single commands
-
-**Recommended workflow:** Use Command Runner for quick verification checks during testing. Use SSH for longer sessions (Tinker, log analysis, multi-step debugging).
+**Quick reference:** Navigate to `/server/{id}/command-runner` (Server > Settings > Commands). Requires `server:custom-command-runner` permission. Output displays in browser and is easy to screenshot for QA evidence.
 
 ## Log Analysis
 

@@ -127,7 +127,14 @@ The difference between "PHP 8.5 shows an Install button" and "PHP 8.5 was instal
 
 > Load `references/ssh-server-commands.md` for SSH verification patterns.
 
-**Command Runner shortcut:** Navigate to Server > Management > Commands in xCloud to run verification commands through the UI without SSH.
+**Command Runner verification (MANDATORY for server operations):**
+After step 3 (verify UI state), open Command Runner at `/server/{id}/command-runner` and run the verification command from the matrix in `references/server-verification.md`. Screenshot the Command Runner output — this is your server-side evidence.
+
+Example: After a PHP install shows "Installed" in the UI, run `php8.2 -v && dpkg -l | grep php8.2 | wc -l` in Command Runner. A screenshot showing version string + package count is your server-side evidence. The UI toast alone is NOT sufficient.
+
+> Load `references/server-verification.md` for the full verification matrix and Command Runner step-by-step workflow.
+
+**Site-type feature awareness:** Before testing, check the site type and server stack to determine which UI features are available. WordPress sites have ~12 additional management pages (debug, caching, updates, etc.) that don't exist for other types. Load `references/xcloud-feature-map.md` for the complete site type feature matrix.
 
 ## 4.5 API Testing
 

@@ -93,7 +93,7 @@ Quick summary:
 
 - **Playwright MCP browser** for all UI testing (navigate, click, fill forms, take screenshots)
 - **SSH** to the staging server (run commands, check logs, use Tinker)
-- **Command Runner** (Server > Management > Commands) — run commands on managed servers through the xCloud UI. Use this alongside or instead of SSH for server-side verification (package checks, config inspection, service status). Command output is visible in the UI and easy to screenshot for evidence.
+- **Command Runner** (Server > Settings > Commands at `/server/{id}/command-runner`) — run shell commands on managed servers through the xCloud UI. Use this alongside or instead of SSH for server-side verification. Command output is visible in the browser and easy to screenshot for evidence. See `references/server-verification.md` for the step-by-step browser workflow and verification command reference.
 - **Local codebase** for reading source code, diffs, and route analysis
 - **Laravel CLI** (artisan) and Tinker for database inspection and cache management
 - **Server logs** at `storage/logs/laravel.log`
@@ -128,6 +128,8 @@ From the diff, identify:
 - **Shared services or traits** — changes here can affect multiple features
 
 #### Step B: Read the actual source files for full context
+
+> Load `references/xcloud-feature-map.md` to identify which xCloud UI pages correspond to the PR's changed features. If the PR modifies a feature that has a management UI page, you must test via that page — not just CLI.
 
 The diff only shows what changed — it doesn't show you how the feature works as a whole. To understand the full picture, read the key source files directly from the local codebase. The PR code is already checked out locally, so use the Read tool, Grep, or Explore agents.
 
@@ -218,6 +220,10 @@ For each change in the PR, derive test cases covering:
 - **Regression** — related features consuming the same code still work correctly
 - **Server-side verification** — for operations that modify server state, verify via SSH or Command Runner
 
+**Server-side verification rule:** For every test case where the UI action modifies server state (installs packages, changes configs, restarts services, manages SSL, creates DB users, modifies firewall rules, syncs keys, etc.), you MUST add a paired verification test case that confirms the change actually took effect via Command Runner or SSH. Consult the verification matrix in `references/server-verification.md` to find the exact verification command for each operation. Do not report PASS based on a UI toast or status badge alone — "UI showed success" is not evidence of server state.
+
+**UI feature coverage rule:** Cross-reference the PR's changes with the feature map in `references/xcloud-feature-map.md` to identify all UI management pages affected. Generate test cases that navigate to and interact with these pages. If a feature has a UI toggle/button (e.g., WordPress debug mode, caching, SSL), the test case must use the UI — not CLI commands.
+
 **Minimum test case counts:**
 
 | PR Scope | Minimum |
@@ -251,6 +257,7 @@ For a full QA session, work through all tiers. For a quick verification (user sa
 - **4.4a End-to-End Action Execution (MANDATORY)** — actually perform the core action on staging, verify UI state + server-side state + database state. "It appears in the UI" is NOT sufficient.
 
 > Load `references/ssh-server-commands.md` for SSH verification patterns, Tinker queries, and server-side checks.
+> Load `references/server-verification.md` for the Command Runner browser workflow, verification matrix (UI action → verification command mapping), and operational recipes for common server checks.
 
 ### Security & API
 - **4.5 API Testing** — auth, validation, pagination, rate limiting
@@ -363,7 +370,7 @@ Before taking screenshots, check if all 3 Cloudinary env vars are available: `CL
 Before writing the final verdict, verify you've completed every mandatory step. If any item is unchecked, **go back and complete it** before proceeding to the report.
 
 - [ ] **Core action executed end-to-end** — actually performed the PR's primary feature on staging (not just verified it appears in the UI)
-- [ ] **Server-side state verified** — after server operations, confirmed packages, config files, binaries, or services are in the expected state (via SSH or Command Runner)
+- [ ] **Server-side state verified** — after every server-modifying operation, ran the specific verification command from `references/server-verification.md` verification matrix via Command Runner or SSH and screenshotted the output. "UI showed success" without a Command Runner/SSH check is incomplete.
 - [ ] **All code consumers searched** — used Grep/Explore to find every consumer of the changed code and verified each handles the change correctly (Section 1.2)
 - [ ] **Frontend/backend guard consistency checked** — for any UI-disabled/hidden feature, verified the backend API also blocks it (Section 4.6)
 - [ ] **Database/meta state verified** — used Tinker to confirm records, flags, and metadata are correct after actions
@@ -428,8 +435,14 @@ Delete ALL test records created during testing. Clean up in reverse order (child
 | **Missing regression tests** | Only testing the changed feature, ignoring consumers | Use Step 1.2 cross-feature analysis to find all consumers and test each |
 | **Skipping Command Runner** | Only using SSH when Command Runner is available | Use Command Runner for server-side verification — output is easy to screenshot |
 | **Skipping tests due to missing infrastructure** | "Staging doesn't have an OLS server so I'll skip OLS tests" | Create the required server/site via Tinker (Step 2.1). Takes 30 seconds. Never skip. |
+| **Trusting UI toast as server proof** | "Restarted" toast ≠ service running. "Installed" badge ≠ packages on disk. | Run the verification command from `references/server-verification.md` via Command Runner and screenshot the output |
+| **Not knowing operational commands** | Agent skips checks because it doesn't know how to verify service health, check SSL, or inspect configs | Load `references/server-verification.md` operational recipes section for stack-aware commands |
+| **Using wrong commands for stack** | Running `service nginx restart` on an OpenLiteSpeed server | Check the server's stack first, then use the stack-specific command from the verification matrix |
 | **Wrong Tinker field values** | Using `'status' => 'active'`, `'stack' => 'ols'`, `'ip' => '...'` | Use actual enum values: `'provisioned'`, `'openlitespeed'`, `'public_ip'`. See environment-setup.md |
 | **Creating sites on wrong stack** | Docker app on Nginx server, or WordPress on OpenClaw | Check the stack-site compatibility matrix in environment-setup.md before creating |
+| **Using CLI instead of UI** | Agent uses `sed` to toggle debug mode when xCloud has a UI toggle at Settings | Check `references/xcloud-feature-map.md` — if a feature has a UI page, test via the UI |
+| **Missing site-type features** | Agent tests only common features, missing WordPress-specific pages like Caching, Updates, Integrity Monitor | Check the site type matrix in `references/xcloud-feature-map.md` for type-specific features to test |
+| **Not checking feature availability by stack** | Testing PHP Analytics on a Docker server where it's not available | Check stack conditions in the feature map — Docker and OpenClaw servers have restricted feature sets |
 
 ## Behavior Rules
 
