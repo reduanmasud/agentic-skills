@@ -125,7 +125,7 @@ The difference between "PHP 8.5 shows an Install button" and "PHP 8.5 was instal
 5. **Verify database/meta state:** Use Tinker to confirm records, metadata, and flags are correct
 6. **Test related features still work:** After the action, do related features (that depend on the same data) still behave correctly?
 
-> Load `references/ssh-server-commands.md` for SSH verification patterns.
+> Load `references/server-verification.md` Section D for SSH verification patterns and Tinker queries.
 
 **Command Runner verification (MANDATORY for server operations):**
 After step 3 (verify UI state), open Command Runner at `/server/{id}/command-runner` and run the verification command from the matrix in `references/server-verification.md`. Screenshot the Command Runner output — this is your server-side evidence.
@@ -264,6 +264,8 @@ Users double-click. Networks retry. Test that repeated actions don't cause dupli
 - **API replay:** Send the same API request twice in quick succession via curl — does the backend handle it correctly (idempotency key, duplicate check, or graceful no-op)?
 
 **Real example (PR #4260):** The "Refresh All" button had triple protection: JS guard (`if (refreshing.value) return`), UI disabled (`:disabled="refreshing"`), and loading indicator (`:loading="refreshing"`). And the backend operation was inherently idempotent. Document all layers of protection you find.
+
+<!-- 4.13 (Manual Testing Escalation) is defined in SKILL.md Step 4, not here -->
 
 ## 4.14 Boundary Testing
 

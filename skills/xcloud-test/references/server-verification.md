@@ -209,8 +209,8 @@ cd {app-path} && php artisan config:clear
 # Recent errors (today)
 grep -i 'error\|exception\|fatal' {app-path}/storage/logs/laravel-$(date +%Y-%m-%d).log | tail -50
 
-# Errors in last 10 minutes
-awk -v d="$(date -d '10 minutes ago' '+%Y-%m-%d %H:%M')" '$0 >= d' {app-path}/storage/logs/laravel-$(date +%Y-%m-%d).log | grep -i error
+# Errors in last 10 minutes (macOS)
+awk -v d="$(date -v-10M '+%Y-%m-%d %H:%M')" '$0 >= d' {app-path}/storage/logs/laravel-$(date +%Y-%m-%d).log | grep -i error
 ```
 
 **Nginx logs:**
@@ -386,4 +386,154 @@ tail -50 /var/log/supervisor/{worker-name}.log
 
 # Count running vs total workers
 echo "Running: $(supervisorctl status | grep RUNNING | wc -l) / Total: $(supervisorctl status | wc -l)"
+```
+
+---
+
+## Section D: SSH Patterns & Tinker Reference
+
+### Connection Patterns
+
+```bash
+# Run a single command
+ssh {user}@{host} "cd {app-path} && <command>"
+
+# Run artisan commands
+ssh {user}@{host} "cd {app-path} && php artisan <command>"
+
+# Interactive Tinker session
+ssh {user}@{host} "cd {app-path} && php artisan tinker"
+
+# Check today's logs
+ssh {user}@{host} "tail -n 200 {app-path}/storage/logs/laravel-$(date +%Y-%m-%d).log"
+
+# Check yesterday's logs (macOS)
+ssh {user}@{host} "tail -n 200 {app-path}/storage/logs/laravel-$(date -v-1d +%Y-%m-%d).log"
+```
+
+Replace `{user}@{host}` and `{app-path}` with the values gathered from the user in the staging environment setup.
+
+### Laravel Artisan Quick Reference
+
+| Command | Purpose |
+|---------|---------|
+| `php artisan config:clear` | Clear config cache |
+| `php artisan cache:clear` | Clear application cache |
+| `php artisan route:clear` | Clear route cache |
+| `php artisan view:clear` | Clear compiled views |
+| `php artisan migrate:status` | Check pending migrations |
+| `php artisan migrate` | Run pending migrations |
+| `php artisan route:list --path=api` | List API routes |
+| `php artisan route:list --name=server` | List routes matching name |
+| `php artisan tinker` | Interactive PHP REPL |
+| `php artisan queue:failed` | List failed queue jobs |
+
+### Cache Clearing (All at Once)
+
+```bash
+ssh {user}@{host} "cd {app-path} && php artisan config:clear && php artisan cache:clear && php artisan route:clear && php artisan view:clear"
+```
+
+### Tinker Patterns for xCloud
+
+#### Finding Users and Teams
+
+```php
+// Find user by email
+$user = User::where('email', 'user@example.com')->first();
+$user->id;           // User ID
+$user->current_team_id;  // Active team
+
+// Get user's teams
+$user->allTeams()->pluck('name', 'id');
+
+// Find team
+$team = Team::find($teamId);
+$team->owner;        // Team owner
+$team->users;        // Team members
+```
+
+#### Checking Team Permissions
+
+```php
+// Check if user has a specific team permission
+$user->hasTeamPermission($team, 'site:manage');
+$user->hasTeamPermission($team, 'server:manage');
+
+// List all permissions for user on team
+$user->teamPermissions($team);
+
+// Check team role
+$user->teamRole($team)->key;  // 'admin', 'editor', etc.
+```
+
+#### Inspecting Server Meta
+
+```php
+$server = Server::find($serverId);
+
+// Get server info (nested meta)
+$server->getServerInfo('php_settings');
+$server->getServerInfo('installed_packages');
+
+// Get/set arbitrary meta
+$server->getMeta('key');
+$server->saveMeta('key', $value);
+
+// Server details
+$server->stack;       // ServerStack enum
+$server->ubuntu_version;
+$server->billing_service;
+$server->team_id;
+```
+
+#### Checking Billing Plans
+
+```php
+$team = Team::find($teamId);
+$team->active_plan_id;
+$team->isTrailMode();  // On trial?
+
+$server->isFreePlan();  // Free plan server?
+
+// Check billing service
+$server->billing_service;  // BillingServices enum
+```
+
+#### Policy Verification
+
+```php
+// Check if a policy allows an action
+$user = User::find($userId);
+$server = Server::find($serverId);
+
+(new \App\Policies\ServerPolicy)->view($user, $server);
+(new \App\Policies\SitePolicy)->manage($user, $site);
+
+// Check Gate::before bypass (admin users)
+$user->isAdmin();  // If true, Gate::before may bypass policies
+```
+
+#### Route Middleware Inspection
+
+```php
+// Find route and check its middleware
+$route = app('router')->getRoutes()->getByName('server.show');
+$route->middleware();
+
+// Or find by URL pattern
+collect(app('router')->getRoutes())->filter(fn($r) => str_contains($r->uri(), 'php/opcache'));
+```
+
+#### Checking Failed Jobs
+
+```php
+// Most recent failed job
+DB::table('failed_jobs')->latest()->first();
+
+// Count recent failures
+DB::table('failed_jobs')->where('failed_at', '>=', now()->subHours(1))->count();
+
+// Failed jobs for a specific queue
+DB::table('failed_jobs')->where('queue', 'server-operations')->latest()->get();
 ```

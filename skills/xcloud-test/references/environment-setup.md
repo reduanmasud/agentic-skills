@@ -255,6 +255,8 @@ $site = Site::create([
 
 **If the PR touches OpenClaw**, you MUST create an `openclaw` server.
 
+> See also `references/xcloud-feature-map.md` → "Site Type Feature Matrix" for which *features* apply to which site types.
+
 #### Site Type Quick Reference
 
 **PHP-based sites** (need `php_version`):

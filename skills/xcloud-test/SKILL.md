@@ -283,8 +283,7 @@ For a full QA session, work through all tiers. For a quick verification (user sa
 ### Critical: End-to-End Execution
 - **4.4a End-to-End Action Execution (MANDATORY)** — actually perform the core action on staging, verify UI state + server-side state + database state. "It appears in the UI" is NOT sufficient.
 
-> Load `references/ssh-server-commands.md` for SSH verification patterns, Tinker queries, and server-side checks.
-> Load `references/server-verification.md` for the Command Runner browser workflow, verification matrix (UI action → verification command mapping), and operational recipes for common server checks.
+> Load `references/server-verification.md` for the Command Runner browser workflow, verification matrix (UI action → verification command mapping), operational recipes, SSH connection patterns, and Tinker queries.
 
 ### Security & API
 - **4.5 API Testing** — auth, validation, pagination, rate limiting
