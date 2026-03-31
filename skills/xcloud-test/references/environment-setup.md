@@ -123,7 +123,7 @@ ssh {user}@{host} "cd {app-path} && php artisan tinker"
 $user = User::create([
     'name' => 'QA Test User',
     'email' => 'qa-test@staging.example.com',
-    'password' => bcrypt('password123'),
+    'password' => bcrypt('<TEST_PASSWORD>'),
 ]);
 
 // Create a team for the user
@@ -138,7 +138,7 @@ $user->update(['current_team_id' => $team->id]);
 $wlUser = User::create([
     'name' => 'QA WL User',
     'email' => 'qa-wl@staging.example.com',
-    'password' => bcrypt('password123'),
+    'password' => bcrypt('<TEST_PASSWORD>'),
     'white_label_id' => $whiteLabelId,
 ]);
 
@@ -187,10 +187,10 @@ $server = Server::create([
     'private_ip' => '10.0.0.1',
     'ssh_port' => 22,
     'ssh_username' => 'root',
-    'sudo_password' => 'qa-test-pass',
+    'sudo_password' => '<SUDO_PASSWORD>',
     'database_type' => 'mysql_8',
     'database_name' => 'xcloud',
-    'database_password' => 'qa-db-pass',
+    'database_password' => '<DB_PASSWORD>',
     'next_site_prefix_id' => 1,
     'ubuntu_version' => '24.04',
 ]);
@@ -309,9 +309,9 @@ $nginxServer = Server::create([
     'name' => 'qa-nginx', 'user_id' => $user->id, 'team_id' => $team->id,
     'status' => 'provisioned', 'stack' => 'nginx', 'is_connected' => true,
     'is_provisioned' => true, 'public_ip' => '10.0.0.1', 'private_ip' => '10.0.0.1',
-    'ssh_port' => 22, 'ssh_username' => 'root', 'sudo_password' => 'pass',
+    'ssh_port' => 22, 'ssh_username' => 'root', 'sudo_password' => '<SUDO_PASSWORD>',
     'database_type' => 'mysql_8', 'database_name' => 'xcloud',
-    'database_password' => 'pass', 'next_site_prefix_id' => 1,
+    'database_password' => '<DB_PASSWORD>', 'next_site_prefix_id' => 1,
 ]);
 
 $wpSite = Site::create([
@@ -331,9 +331,9 @@ $dockerServer = Server::create([
     'name' => 'qa-docker', 'user_id' => $user->id, 'team_id' => $team->id,
     'status' => 'provisioned', 'stack' => 'docker_nginx', 'is_connected' => true,
     'is_provisioned' => true, 'public_ip' => '10.0.0.2', 'private_ip' => '10.0.0.2',
-    'ssh_port' => 22, 'ssh_username' => 'root', 'sudo_password' => 'pass',
+    'ssh_port' => 22, 'ssh_username' => 'root', 'sudo_password' => '<SUDO_PASSWORD>',
     'database_type' => 'mysql_8', 'database_name' => 'xcloud',
-    'database_password' => 'pass', 'next_site_prefix_id' => 1,
+    'database_password' => '<DB_PASSWORD>', 'next_site_prefix_id' => 1,
 ]);
 
 $nextcloudSite = Site::create([
@@ -390,7 +390,7 @@ $team->users()->attach($memberUser, ['role' => 'editor']); // or 'viewer'
 $wlUser = User::create([
     'first_name' => 'QA', 'last_name' => 'WL User',
     'email' => 'qa-wl@staging.example.com',
-    'password' => bcrypt('password123'),
+    'password' => bcrypt('<TEST_PASSWORD>'),
     'white_label_id' => $whiteLabelId,  // Get from existing whitelabel
 ]);
 ```

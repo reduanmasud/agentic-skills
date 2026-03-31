@@ -216,6 +216,10 @@ For each change in the PR, derive test cases covering:
 - **Happy path** — feature works as intended with valid input
 - **Negative path** — invalid input rejected, unauthorized access blocked, missing data handled
 - **Edge cases** — boundary values, empty states, maximum limits, special characters
+- **Boundary values** — test at exact min, max, min-1, max+1 for every input field (see 4.14)
+- **Negative inputs** — type mismatches, wrong-state operations, malformed data patterns (see 4.15)
+- **Limit scenarios** — plan-based resource limits, pagination edge cases, empty/full states (see 4.16)
+- **Combinatorial pairs** — if the feature branches on 2+ dimensions (stack, type, role, plan), build a pairwise matrix (see 4.17)
 - **Role-based** — same scenario tested with different user roles (paid, free, admin, team member)
 - **Regression** — related features consuming the same code still work correctly
 - **Server-side verification** — for operations that modify server state, verify via SSH or Command Runner
@@ -234,6 +238,29 @@ For each change in the PR, derive test cases covering:
 
 Present the test case list before executing. Each test case must specify: what to test, expected result, and what evidence to collect.
 
+### Test Case Traceability Matrix (MANDATORY)
+
+After generating test cases, build a **traceability matrix** that maps every changed file to its test cases. This ensures no changed file goes untested.
+
+```
+| Changed File | What Changed | Test Cases | Coverage |
+|-------------|-------------|------------|----------|
+| SiteController.php | Added validation for site name | TC-3, TC-4, TC-12, TC-15 | 4 tests |
+| SitePolicy.php | New `manage` permission check | TC-7, TC-8, TC-9 | 3 tests |
+| CreateSite.vue | Added name length indicator | TC-3, TC-14 | 2 tests |
+| create_sites_table.php | Added `prefix` column | TC-5, TC-6 | 2 tests |
+```
+
+**Rules:**
+- **Every changed file must have at least 1 test case** — if a file has zero, you are missing coverage. Write test cases for it.
+- **Controllers/Services need at least 2 test cases per changed method** — one happy path, one negative/edge case
+- **Vue components need at least 1 UI interaction test** — navigating to the page and verifying the component renders correctly via Playwright
+- **Policy changes need at least 2 role-based test cases** — authorized user + unauthorized user
+- **Migration changes need at least 1 database verification** — Tinker query confirming schema/data
+- If a file genuinely cannot be tested (e.g., a config change with no observable effect), document why in the matrix's Coverage column — but this should be rare
+
+**After testing:** Update the matrix with actual results. Any file that still shows 0 executed tests is a gap that must be addressed before the report is finalized.
+
 ### Testing Priority
 
 When time is limited or the PR is small, prioritize in this order. Tier 1 is always mandatory — lower tiers can be abbreviated for trivial PRs but should be fully covered for medium-to-large changes.
@@ -242,7 +269,7 @@ When time is limited or the PR is small, prioritize in this order. Tier 1 is alw
 |----------|-----------|--------------|
 | **Tier 1 (Always)** | 4.1 Smoke, 4.2 Sanity, 4.4a End-to-End Execution | Never — these are the minimum for any QA |
 | **Tier 2 (High)** | 4.3 Regression, 4.6 Security, 4.7 xCloud-Specific | Only if the PR touches zero shared code and zero auth/billing paths |
-| **Tier 3 (Standard)** | 4.4 Scenario, 4.5 API, 4.11 State Transitions, 4.12 Idempotency | Skip specific subcategories if genuinely irrelevant (e.g., no API endpoints = skip 4.5) |
+| **Tier 3 (Standard)** | 4.4 Scenario, 4.5 API, 4.11 State Transitions, 4.12 Idempotency, 4.14 Boundary, 4.15 Negative, 4.16 Limit, 4.17 Combinatorial | Skip specific subcategories if genuinely irrelevant (e.g., no API endpoints = skip 4.5, no user inputs = skip 4.14, single-parameter feature = skip 4.17) |
 | **Tier 4 (Thorough)** | 4.8 Usability, 4.9 Performance, 4.10 Error Recovery | Can abbreviate for cosmetic or small config PRs |
 
 For a full QA session, work through all tiers. For a quick verification (user says "quick test" or "just check if it works"), complete Tier 1 fully and note in the report that lower tiers were skipped.
@@ -268,6 +295,12 @@ For a full QA session, work through all tiers. For a quick verification (user sa
 ### Platform-Specific
 - **4.7 xCloud-Specific Checks** — billing guards, whitelabel isolation, enterprise exclusions, team permissions, server stacks, site types
 
+### Input & Limit Validation
+- **4.14 Boundary Testing** — exact boundary values for all inputs, xCloud-specific field ranges
+- **4.15 Negative Testing** — invalid types, wrong-state operations, malformed data patterns
+- **4.16 Limit Testing** — plan-based resource limits, system capacity, pagination edge cases
+- **4.17 Combinatorial / Pairwise Testing** — parameter interaction bugs across stack × type × role × plan combinations
+
 ### Quality & Resilience
 - **4.8 Usability Testing** — layouts, navigation, error messages, loading states
 - **4.9 Performance Observations** — load times, N+1 queries, heavy operations
@@ -281,29 +314,44 @@ During test execution, you will encounter scenarios that **cannot be fully autom
 
 **Do NOT silently skip these and document them later.** The PR branch is deployed NOW — once you revert it in Step 8, the user would have to redeploy to verify these items. Handle them **during** the testing phase.
 
-**When you encounter a test case you cannot automate**, STOP and present the user with these 3 options:
+**When you encounter a test case you cannot fully automate**, your DEFAULT action is **Option 1: attempt partial testing**. Do NOT skip to Option 3.
+
+### Option Priority (MANDATORY ORDER)
+
+**Option 1 (DEFAULT — always attempt first):** Generate test data via Tinker and test everything you CAN — UI rendering, policy behavior, API responses, database state, script content review. Note in the report: "Tested via Tinker-generated data — server-side execution not verified." This is STILL real testing — you are verifying UI behavior, authorization, validation, and database state on staging.
+
+**Option 2 (when Option 1 is insufficient):** Present the user with exact manual test steps. Provide numbered steps with exact URLs, expected results, and what evidence to collect (screenshot, command output). Wait for the user's response before continuing. Include their findings in the report with "Verified by user" attribution.
+
+**Option 3 (LAST RESORT — requires user approval):** You may NOT choose Option 3 yourself. If you believe a test genuinely cannot be tested even partially, present it to the user and ask: "Should I skip this test? I could not find a way to test it even partially." Only skip if the user explicitly approves.
+
+### Hard Cap on Skipped Tests
+
+**Maximum 3 items in "Areas Not Fully Tested" per report.** If you hit 3 skipped items, you MUST go back and find a way to partially test additional items via Option 1 or escalate to the user via Option 2. A report with 5+ untested areas is an incomplete QA session, not a thorough one.
+
+### Escalation Format
+
+**Batch related manual items** — present them together in one prompt, not one at a time:
 
 ```
-I cannot automate the following test:
-  [Test case description — what needs to be verified and why it requires manual action]
+I cannot fully automate the following tests. Here's my plan:
 
-Options:
-  1. **Generate test data & attempt** — I'll create the necessary records/state via Tinker
-     and test as much as possible (may not cover full end-to-end server execution)
-  2. **You test manually** — I'll provide the exact steps below. Perform them on staging
-     and tell me the result (PASS/FAIL + what you observed). I'll wait and include your
-     findings in the report.
-  3. **Skip with note** — I'll skip this test and document it in "Areas Not Fully Tested"
-     with the reason and what would need to be verified.
+OPTION 1 (I will attempt these — partial testing via Tinker/UI):
+  - [Test case] — I'll create test data and verify UI rendering + DB state
+  - [Test case] — I'll verify the script content is correct + policy blocks unauthorized users
 
-Which option?
+OPTION 2 (Need your help — requires real infrastructure):
+  - [Test case] — exact steps you'd need to perform + what to observe
+
+OPTION 3 (Cannot test even partially — requesting your approval to skip):
+  - [Test case] — reason why even partial testing is impossible
+
+Proceeding with Option 1 items now. Please let me know about Option 2 and 3 items.
 ```
 
-**Rules:**
-- **Batch related manual items** — if multiple test cases need manual testing, present them together in one prompt, not one at a time
-- **Option 1 (test data):** Create records via Tinker, test UI rendering, policy behavior, API responses — everything except actual server-side execution. Clearly note in the report: "Tested via Tinker-generated data — server-side execution not verified"
-- **Option 2 (user tests):** Provide numbered steps with exact URLs, expected results, and what evidence to collect (screenshot, command output). Wait for the user's response before continuing. Include their findings in the report with "Verified by user" attribution
-- **Option 3 (skip):** Add to the report's "Areas Not Fully Tested" table with the specific reason and recommended manual verification steps for the reviewer
+### Rules
+- **Option 1 is NOT "skipping"** — testing UI + DB + policies via Tinker-generated data is real testing that catches real bugs. The only thing you're not testing is actual server-side execution.
+- **Option 2 (user tests):** Wait for the user's response before continuing. Include their findings in the report with "Verified by user" attribution.
+- **Option 3 requires explicit user approval** — never self-approve a skip. The user decides what's acceptable to leave untested.
 
 **Common scenarios requiring escalation:**
 
@@ -380,6 +428,26 @@ Before writing the final verdict, verify you've completed every mandatory step. 
 - [ ] **Failure paths considered** — tested or reasoned about what happens when the operation fails, and verified status doesn't get stuck
 - [ ] **Double-submit checked** — verified rapid clicks or form resubmission don't cause duplicate actions
 
+### Coverage Gate (MANDATORY)
+
+Before writing the verdict, calculate your coverage:
+
+1. **Traceability check:** Review the traceability matrix from Step 4.0. Every changed file must have at least 1 executed test case with evidence from staging. If any file has 0 executed tests, go back and test it.
+
+2. **Skip count check:** Count items in "Areas Not Fully Tested." If more than 3, go back and convert skips to partial tests (Option 1) or user-assisted tests (Option 2). Maximum 3 skipped areas per report.
+
+3. **Evidence audit — scan every test case for code-review-as-evidence:**
+   Look at the Evidence column of every test case table. Flag any row where the evidence is:
+   - "Code review confirms..." or "The code handles..."
+   - "Verified by reading the controller/policy/migration"
+   - "The diff shows that..." or "The PR addresses this by..."
+   - "Based on the implementation..." or "The logic correctly..."
+   - Any description of what the code does instead of what you observed on staging
+
+   **If you find any of these:** That test case is NOT tested. Replace the evidence with actual staging evidence — screenshot, Tinker output, SSH command output, curl response, or browser console log. If you cannot get staging evidence, move the test case to "Areas Not Fully Tested" (subject to the 3-item cap).
+
+4. **Coverage percentage:** Calculate `(test cases with staging evidence) / (total test cases) × 100`. If below **80%**, the report is incomplete — go back and fill gaps. Target is **90%+**.
+
 A PASS verdict without completing all items is incomplete QA.
 
 ## Step 6.7: Close Browser
@@ -443,6 +511,12 @@ Delete ALL test records created during testing. Clean up in reverse order (child
 | **Using CLI instead of UI** | Agent uses `sed` to toggle debug mode when xCloud has a UI toggle at Settings | Check `references/xcloud-feature-map.md` — if a feature has a UI page, test via the UI |
 | **Missing site-type features** | Agent tests only common features, missing WordPress-specific pages like Caching, Updates, Integrity Monitor | Check the site type matrix in `references/xcloud-feature-map.md` for type-specific features to test |
 | **Not checking feature availability by stack** | Testing PHP Analytics on a Docker server where it's not available | Check stack conditions in the feature map — Docker and OpenClaw servers have restricted feature sets |
+| **"Code looks correct" as evidence** | Writing "the controller validates input correctly" based on reading code | Log in, submit invalid input, screenshot the error response. Code analysis is not QA evidence. |
+| **"Verified by reviewing the diff"** | Writing "the PR fixes the null check" without testing on staging | Actually trigger the null case on staging and verify the fix works. Reading code = code review, not testing. |
+| **Skipping UI test because Tinker confirms DB state** | "Tinker shows the record exists so the feature works" | Navigate to the UI page, interact with the feature, screenshot the result. DB state ≠ UI behavior. |
+| **Too many "Areas Not Fully Tested"** | Report has 5+ untested areas, treated as acceptable | Maximum 3 skipped areas per report. Convert skips to partial tests (Option 1) or user-assisted tests (Option 2). |
+| **Self-approving Option 3 (skip)** | Agent decides to skip a test without asking the user | Option 3 requires explicit user approval. Always attempt Option 1 (partial testing) first. |
+| **Vague test cases** | "Verify the feature works for different roles" — no specific scenario | Be specific: "Log in as free user (email), navigate to /servers/5/php, click Install PHP 8.3, verify upgrade prompt shown" |
 
 ## Behavior Rules
 

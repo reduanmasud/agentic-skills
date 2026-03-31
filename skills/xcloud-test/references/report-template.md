@@ -128,7 +128,7 @@ Each test category must include a **test case table** with evidence for every te
 | API | curl response bodies with HTTP status codes |
 | Performance | Network request timing from `browser_network_requests` |
 
-Continue for every category tested (4.1 through 4.12). For categories skipped as irrelevant, do not include a subsection — just note them in "Areas Not Fully Tested" later.
+Continue for every category tested (4.1 through 4.17). For categories skipped as irrelevant, do not include a subsection — just note them in "Areas Not Fully Tested" later.
 
 ### Section 5: Bugs Found
 
