@@ -19,6 +19,27 @@ For each PR you test, you will check out the code locally and deploy it to the s
 - **General server debugging** unrelated to a PR → SSH directly, no skill needed
 - **Deploying without testing** — this skill tests, not just deploys
 
+## Task Progress Indicators (MANDATORY)
+
+At the very start of every QA session, **immediately create tasks** using `TaskCreate` so the user can see step-by-step progress. Create these tasks before doing anything else:
+
+```
+TaskCreate: "Step 1: Analyze PR & read changed files"
+TaskCreate: "Step 2: Deploy to staging & prepare environment"
+TaskCreate: "Step 3: Generate test cases & traceability matrix"
+TaskCreate: "Step 4: Execute browser testing on staging"
+TaskCreate: "Step 5: Evidence collection & screenshots"
+TaskCreate: "Step 6: Pre-verdict completeness check"
+TaskCreate: "Step 7: Write QA report"
+TaskCreate: "Step 8: Cleanup test data"
+```
+
+**Rules:**
+- Mark each task `in_progress` when you start it, `completed` when done
+- If pipelined (analysis + deploy run in parallel), mark both Step 1 and Step 2 as `in_progress` simultaneously
+- For multi-PR parallel mode, create a top-level task per PR (e.g., "PR #1234: Testing") with subtasks
+- These indicators are the user's primary way to track progress — never skip them
+
 ## Step 0: PR Intake & Mode Selection
 
 ### 0.1 Parse Input
