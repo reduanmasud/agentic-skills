@@ -13,17 +13,50 @@ Ask the user for ALL of these before starting. Do NOT assume or hardcode values.
 | **Free/restricted test account** | Email + password for billing guard and permission testing |
 | **Whitelabel URL** (if relevant) | For testing whitelabel-scoped features |
 
-## Single vs. Multi-Environment Setup
+## Environment Setup Modes
 
-When testing multiple PRs, environment info can be gathered in two ways:
+When testing multiple PRs, environment info gathering depends on the execution and environment mode chosen in Step 0.2:
 
-| Mode | When to use | How it works |
-|------|------------|--------------|
-| **Single environment** | All PRs deploy to the same staging server | Gather environment info (URL, SSH, app path, credentials) once and reuse for every PR |
-| **Multiple environments** | Each PR has its own staging server | Ask for separate environment info per PR before testing it |
-| **Single PR** (default) | Only one PR to test | No special handling — gather info once and proceed |
+| Execution | Environment | How it works |
+|-----------|-------------|--------------|
+| **Parallel + Separate servers** | Gather per-PR environment info BEFORE dispatching agents | Each agent gets its own URL/SSH/credentials |
+| **Parallel + Same server** | Gather environment info ONCE | Parallel code analysis, then sequential deploy + test on shared server |
+| **Sequential + Same server** | Gather environment info ONCE | Classic sequential flow — deploy, test, cleanup, next PR |
+| **Sequential + Separate servers** | Gather per-PR environment info as each PR starts | Ask for env info before each PR's testing begins |
+| **Single PR** (default) | Gather environment info ONCE | No special handling — gather info once and proceed |
 
-For single-environment multi-PR testing, be aware that:
+### Parallel Environment Gathering (Separate Servers)
+
+When using parallel mode with separate servers, collect ALL environment info upfront before dispatching agents:
+
+```
+"I need environment info for each PR before dispatching parallel agents:
+
+PR #1234:
+  - Staging URL: ?
+  - SSH access (user@host): ?
+  - App path on server: ?
+  - Paid test account (email + password): ?
+  - Free test account (email + password): ?
+
+PR #5678:
+  - Staging URL: ?
+  - SSH access (user@host): ?
+  - App path on server: ?
+  - Paid test account (email + password): ?
+  - Free test account (email + password): ?
+"
+```
+
+**Rules for parallel environment gathering:**
+- Collect ALL environments before dispatching any agent — agents cannot pause mid-test to ask for info
+- Credentials can be shared across PRs if the staging servers use the same user accounts
+- Each agent operates independently — no shared state between parallel agents
+- If the user provides partial info (e.g., same credentials for all PRs), fill in the shared fields for each agent's prompt
+
+### Same Server Constraints
+
+For same-server setups (parallel or sequential), be aware that:
 - Each PR deployment overwrites the previous one on the same server
 - Migrations from one PR may affect subsequent PRs
 - Test data cleanup (Step 8) must run between PRs to avoid collisions

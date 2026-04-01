@@ -32,14 +32,151 @@ gh pr view <PR_NUMBER> --json number,title,headRefName,state -q '"\(.number) —
 
 If any PR is not found or is closed/merged, notify the user and ask whether to proceed with the remaining PRs.
 
-### 0.2 Mode Selection
+### 0.2 Execution Mode Selection
 
-- **Single PR:** Skip mode selection entirely — proceed directly to Step 1.
-- **Multiple PRs:** Ask the user to choose:
-  - **Single environment** — all PRs deployed sequentially to the same staging server, using the same credentials. Environment info is gathered once.
-  - **Multiple environments** — each PR has its own staging server. You will ask for separate environment info (URL, SSH, app path, credentials) for each PR.
+- **Single PR:** Skip mode selection entirely — proceed directly to Step 0.6 (Local Checkout), then Step 1.
+- **Multiple PRs:** Always ask the user TWO questions before proceeding:
 
-### 0.3 Local Checkout (Every PR)
+**Question 1 — Execution strategy:**
+> "Multiple PRs detected (PR #X, #Y, #Z). How should I proceed?"
+> - **Parallel** — One agent per PR, testing concurrently (faster, higher token cost)
+> - **Sequential** — One PR at a time through the full workflow (slower, lower token cost)
+
+**Question 2 — Environment mode** (ask regardless of parallel/sequential):
+> "Environment mode?"
+> - **Same server** — All PRs share one staging server (gather environment info once)
+> - **Separate servers** — Each PR has its own staging server (gather environment info per PR)
+
+This produces **three execution paths:**
+
+| Execution | Environment | Result |
+|-----------|-------------|--------|
+| **Parallel + Separate servers** | Full parallel — analysis, deploy, and testing all concurrent |
+| **Parallel + Same server** | Hybrid — parallel code analysis, sequential deploy + testing |
+| **Sequential** (any environment) | Existing flow, completely unchanged |
+
+### 0.3 Parallel Code Analysis (parallel mode only)
+
+When parallel mode is chosen, spawn **one analysis Agent per PR** using git worktree isolation. All agents run concurrently in a single message.
+
+Each analysis agent:
+1. `gh pr checkout <PR_NUMBER>` (in its isolated worktree)
+2. `gh pr diff <PR_NUMBER> --name-only` → list changed files
+3. Read changed files, cross-reference with `references/xcloud-feature-map.md`
+4. Identify: affected features, UI pages, server-side operations, testing categories
+5. Return structured analysis as its final output
+
+**Agent dispatch pattern:**
+```
+# Spawn ALL analysis agents in a SINGLE message (parallel execution)
+Agent(
+  description="Analyze PR #1234",
+  isolation="worktree",
+  prompt="You are analyzing PR #1234 for the xcloud-test QA workflow.
+
+  1. Run: gh pr checkout 1234
+  2. Run: gh pr diff 1234 --name-only
+  3. Read the changed files to understand what the PR does
+  4. Cross-reference with the xCloud feature map to identify affected UI pages
+  5. Return a structured analysis:
+     - Changed files list
+     - Affected features and UI pages
+     - Suggested testing categories (from the 17 categories)
+     - Cross-feature impact warnings (shared services, traits, policies)
+     - Recommended test focus areas
+     - PR summary: what it does, what was broken, how it fixes it"
+)
+```
+
+Collect all analysis results before proceeding to Step 0.4.
+
+### 0.4 Agent Dispatch Decision
+
+Based on the mode chosen in Step 0.2:
+
+#### Path A: Parallel + Separate Servers
+
+1. **Gather environment info per PR** — ask the user for staging URL, SSH, app path, and credentials for each PR's server
+2. **Spawn one testing Agent per PR** — all in a single message (parallel execution)
+3. Each agent receives:
+   - PR number and pre-computed analysis from Step 0.3
+   - That PR's environment info (URL, SSH, app path, credentials)
+   - Instructions to execute Steps 2-8 of this workflow
+4. **Wait for all agents to complete**, then collect individual reports
+5. Write the Multi-PR Summary Report (Step 7.5)
+
+**Worker agent prompt template:**
+```
+Agent(
+  description="Test PR #1234",
+  prompt="You are a QA testing agent for xcloud-test. Execute Steps 2-8 for a single PR.
+
+  **PR:** #1234
+  **Pre-computed Analysis:**
+  [paste analysis results from Step 0.3]
+
+  **Environment:**
+  - Staging URL: {url}
+  - SSH: {user}@{host}
+  - App path: {path}
+  - Paid test account: {email} / {password}
+  - Free test account: {email} / {password}
+
+  **Instructions:**
+  1. Deploy the PR branch to the staging server (Step 0.6 procedure)
+  2. Load references as needed (testing-categories.md, server-verification.md, etc.)
+  3. Execute: Step 2 (Env Prep) → Step 3 (Browser) → Step 4 (Testing) → Step 5 (Analysis) → Step 6 (Evidence) → Step 6.5 (Pre-verdict) → Step 6.7 (Close browser) → Step 7 (Report) → Step 8 (Cleanup)
+  4. Skip Step 1 (Context Gathering) — the analysis is pre-computed above.
+  5. Return your complete QA report as your final output."
+)
+```
+
+#### Path B: Parallel + Same Server (Hybrid)
+
+1. **Gather environment info ONCE**
+2. **Code analysis already done** in Step 0.3 (parallel) — skip Step 1 for each PR
+3. **Deploy + test sequentially** per PR (same server forces sequential):
+   - Deploy PR branch (Step 0.6) → Steps 2-8
+   - Use the pre-computed analysis from Step 0.3 instead of running Step 1
+4. **After all PRs:** Write Multi-PR Summary Report
+
+**Benefit:** The analysis phase (often the slowest part of Step 1) is parallelized. Testing is still sequential due to the shared server, but each PR starts testing faster because analysis is pre-done.
+
+#### Path C: Sequential (any environment)
+
+Existing flow, completely unchanged. See Step 0.5 below.
+
+### 0.5 Sequential Multi-PR Execution Flow
+
+This is the original sequential flow, used when the user chooses "Sequential" in Step 0.2.
+
+#### Same Server (Sequential)
+
+1. **Gather environment info ONCE** (staging URL, SSH, app path, credentials — see "Staging Environment" section)
+2. **For each PR sequentially:**
+   - Local checkout (Step 0.6) → Deploy to server (Step 0.6)
+   - Clear caches + run migrations (Step 2)
+   - Analyze PR (Step 1) → Browser setup (Step 3) → Test (Step 4)
+   - Root cause analysis (Step 5) → Evidence collection (Step 6) → Pre-verdict check (Step 6.5)
+   - **Close browser (Step 6.7)** → Write individual report (Steps 7/7.5) → Cleanup (Step 8)
+3. **After all PRs:** Write Multi-PR Summary Report (see `references/report-template.md`)
+
+#### Separate Servers (Sequential)
+
+1. **For each PR:** Ask for separate environment info, then follow the same per-PR loop as above
+2. **After all PRs:** Write Multi-PR Summary Report
+
+#### Important Notes
+
+- **Browser isolation:** Step 6.7 closes the browser after each PR. Step 3 opens a fresh browser for the next PR. This prevents session/state leakage between PRs.
+- **Test data isolation:** Step 8 cleanup runs after each PR, before the next PR starts. This prevents test data collisions on single-environment setups.
+- **Failure handling:** If one PR fails testing (sequential or parallel), continue with the remaining PRs. The summary report shows mixed results.
+- **Migration conflicts:** If a PR's migrations conflict with a previous PR's changes on the same environment, report the conflict to the user and skip that PR.
+- **Parallel agent failures:** If a parallel testing agent crashes or times out, its report is marked as "Agent Failed — requires manual re-test" in the summary.
+
+### 0.6 Local Checkout & Server Deployment (Per PR)
+
+#### Local Checkout
 
 Before testing each PR, check out the branch locally so the Read/Grep/Explore tools work on the PR's source code:
 
@@ -53,7 +190,7 @@ If the checkout fails due to uncommitted local changes, stash them first:
 git stash && gh pr checkout <PR_NUMBER>
 ```
 
-### 0.4 Server Deployment (Every PR)
+#### Server Deployment
 
 Deploy the PR branch to the staging server. See `references/environment-setup.md` "Deploying a PR Branch to the Staging Server" section for the full procedure.
 
@@ -63,31 +200,6 @@ Quick summary:
 3. Clear caches and run migrations
 4. Conditionally run `composer install` / `npm run build` if dependency or frontend files changed
 5. Verify the deployment matches the PR's head commit
-
-### 0.5 Multi-PR Execution Flow
-
-#### Single-Environment Mode
-
-1. **Gather environment info ONCE** (staging URL, SSH, app path, credentials — see "Staging Environment" section)
-2. **For each PR sequentially:**
-   - Local checkout (Step 0.3) → Deploy to server (Step 0.4)
-   - Clear caches + run migrations (Step 2)
-   - Analyze PR (Step 1) → Browser setup (Step 3) → Test (Step 4)
-   - Root cause analysis (Step 5) → Evidence collection (Step 6) → Pre-verdict check (Step 6.5)
-   - **Close browser (Step 6.7)** → Write individual report (Steps 7/7.5) → Cleanup (Step 8)
-3. **After all PRs:** Write Multi-PR Summary Report (see `references/report-template.md`)
-
-#### Multiple-Environment Mode
-
-1. **For each PR:** Ask for separate environment info, then follow the same per-PR loop as above
-2. **After all PRs:** Write Multi-PR Summary Report
-
-#### Important Notes
-
-- **Browser isolation:** Step 6.7 closes the browser after each PR. Step 3 opens a fresh browser for the next PR. This prevents session/state leakage between PRs.
-- **Test data isolation:** Step 8 cleanup runs after each PR, before the next PR starts. This prevents test data collisions on single-environment setups.
-- **Failure handling:** If one PR fails testing, continue with the remaining PRs. The summary report shows mixed results.
-- **Migration conflicts:** If a PR's migrations conflict with a previous PR's changes on the same environment, report the conflict to the user and skip that PR.
 
 ## Available Access
 
@@ -106,7 +218,60 @@ You MUST ask the user for the following details before starting any testing. Do 
 
 **Required:** Staging URL, SSH access, app path, paid test account, free test account, and whitelabel URL (if relevant). See the reference file for the complete table.
 
+## Pipelined Analysis + Deployment (ALL modes)
+
+**This optimization applies to every mode** — single PR, sequential, and parallel. Step 1 (code analysis) and Step 2 (server deployment) are independent and SHOULD run concurrently.
+
+### How to Pipeline
+
+After gathering environment info, spawn **two agents in a single message**:
+
+```
+# Agent 1: Code analysis (worktree isolation for clean checkout)
+Agent(
+  description="Analyze PR #<N>",
+  isolation="worktree",
+  prompt="Analyze PR #<N> for xcloud-test QA.
+  1. gh pr checkout <N>
+  2. gh pr diff <N> --name-only
+  3. Read changed files, identify affected features/UI pages
+  4. Cross-reference with xCloud feature map
+  5. Return: changed files, affected features, suggested test categories,
+     cross-feature impact, PR summary (what/why/how)"
+)
+
+# Agent 2: Server deployment (runs SSH commands)
+Agent(
+  description="Deploy PR #<N> to staging",
+  prompt="Deploy PR #<N> to the staging server.
+  Environment: SSH={user}@{host}, App path={path}
+  1. Get branch: gh pr view <N> --json headRefName -q '.headRefName'
+  2. SSH deploy: git fetch origin && git checkout {branch} && git pull origin {branch}
+  3. Clear caches: php artisan config:clear && cache:clear && route:clear && view:clear
+  4. Run migrations: php artisan migrate
+  5. If composer.json changed: composer install --no-interaction
+  6. If frontend files changed: npm install && npm run build
+  7. Verify: git branch --show-current && git log --oneline -1
+  8. Return: deployment status (success/failure), branch name, commit hash"
+)
+```
+
+Both agents run concurrently. When both complete:
+- If deploy failed → report error to user, skip this PR
+- If both succeeded → proceed to Step 3 (Browser) with analysis results, on an already-deployed server
+
+**Time saved:** ~2-3 minutes per PR (deploy runs during analysis instead of after it).
+
+### When NOT to pipeline
+
+- **Parallel + Same server with multiple PRs:** Deploy must be sequential (each PR overwrites the previous). But analysis is still pipelined with the first PR's deploy.
+- **Deploy agent failure:** If SSH fails, the testing flow stops for that PR. Report the error and continue to the next PR.
+
+---
+
 ## Step 1: Gather Context
+
+> **Note:** If pipelined analysis was used (agent from the section above), skip Step 1 entirely — the analysis results are already available. Proceed to Step 3 (Browser Setup) since deployment is also done.
 
 ### 1.1 Analyze the PR
 
@@ -181,6 +346,8 @@ xCloud has distinct user roles with different access levels. Test with at least 
 | **Team member** (non-owner) | Team permissions, `hasTeamPermission()` checks |
 
 ## Step 2: Environment Preparation
+
+> **Note:** If pipelined deployment was used (deploy agent from "Pipelined Analysis + Deployment"), cache clearing and migrations are already done. Skip to Step 2.1 (Test Infrastructure Audit) — you still need to verify stacks/site types and create test data.
 
 > Load `references/environment-setup.md` for the full setup procedure: cache clearing, migration management, test data creation patterns, and screenshot directory setup.
 
@@ -516,6 +683,58 @@ Delete ALL test records created during testing. Clean up in reverse order (child
 | **Too many "Areas Not Fully Tested"** | Report has 5+ untested areas, treated as acceptable | Maximum 3 skipped areas per report. Convert skips to partial tests (Option 1) or user-assisted tests (Option 2). |
 | **Self-approving Option 3 (skip)** | Agent decides to skip a test without asking the user | Option 3 requires explicit user approval. Always attempt Option 1 (partial testing) first. |
 | **Vague test cases** | "Verify the feature works for different roles" — no specific scenario | Be specific: "Log in as free user (email), navigate to /servers/5/php, click Install PHP 8.3, verify upgrade prompt shown" |
+
+## Progress Reporting (MANDATORY)
+
+Long silent periods make it impossible for the user to tell if work is happening or if the agent is stuck. **Output a short status message at every checkpoint** listed below. These are plain text messages — not tool calls, not comments in code. Just print them so the user sees activity.
+
+### Checkpoint Messages
+
+Print these at the indicated moments. Keep each message to **one line**.
+
+**Step 1 (Analysis):**
+- `Analyzing PR #<N>... reading diff (<X> files changed)`
+- `Reading <filename> for full context...`
+- `Cross-feature impact: found <N> consumers of changed code`
+- `Analysis complete — <N> features affected, <N> UI pages to test`
+
+**Step 2 (Deploy/Prep):**
+- `Deploying branch <name> to staging via SSH...`
+- `Clearing caches and running migrations...`
+- `Running composer install...` (if applicable)
+- `Deploy verified — commit <hash> matches PR head`
+- `Creating test infrastructure: <what> via Tinker...`
+
+**Step 3 (Browser):**
+- `Opening browser → navigating to <staging-url>...`
+- `Logging in as <role> (<email>)...`
+
+**Step 4 (Testing) — print for EVERY test case:**
+- `[TC-<N>/<total>] <category>: <test case name>...`
+- `[TC-<N>/<total>] → PASS` or `[TC-<N>/<total>] → FAIL: <one-line reason>`
+- `Switching to <role> account for role-based tests...`
+- `Running server-side verification via Command Runner...`
+
+**Step 5 (Root Cause):**
+- `Bug found — tracing root cause in <file>...`
+
+**Step 6 (Evidence):**
+- `Capturing screenshot <N>/<total>: <description>...`
+- `Uploading to Cloudinary...` (if applicable)
+
+**Step 7 (Report):**
+- `Writing QA report... section <N>/13: <section name>`
+- `Report validation: checking <N> items...`
+
+**Step 8 (Cleanup):**
+- `Cleaning up test data: deleting <N> records...`
+- `Cleanup verified — all test records removed`
+
+### Rules
+
+- **Never go more than 60 seconds without printing a status message.** If a tool call takes longer (e.g., slow SSH, large file read), print a "still working on..." message before the tool call.
+- **Test case progress is the most important feedback.** The user needs to see `[TC-5/20]` ticking up to know testing is progressing. Never run multiple test cases without printing progress between them.
+- **Errors get immediate output.** If SSH fails, browser crashes, or a test case unexpectedly errors — print it immediately, don't batch it for the report.
 
 ## Behavior Rules
 
