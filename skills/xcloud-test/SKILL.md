@@ -1224,6 +1224,39 @@ Print these at the indicated moments. Keep each message to **one line**.
 - **Test case progress is the most important feedback.** The user needs to see `[TC-5/20]` ticking up to know testing is progressing. Never run multiple test cases without printing progress between them.
 - **Errors get immediate output.** If SSH fails, browser crashes, or a test case unexpectedly errors — print it immediately, don't batch it for the report.
 
+## Verdict Rules (MANDATORY)
+
+> Load `references/business-logic-validation.md` for the full decision tree and examples.
+> Load `references/test-case-template.md` for test case formats and verdict rules.
+
+**A business logic flaw in the PR's core feature is a FAIL verdict, not a PASS with observations.**
+
+| Condition | Verdict |
+|-----------|---------|
+| All tests pass, logic is correct | **PASS** |
+| Tests pass, minor edge-case observations | **PASS** (with observations) |
+| Tests pass but core feature logic is flawed (false positives, misleading output, wrong thresholds) | **FAIL** (logic flaw) |
+| User explicitly confirms flawed logic is intentional | **CONDITIONAL PASS** (document confirmation) |
+| Any critical/high bug found | **FAIL** |
+
+**Never downgrade a core logic flaw to "observation."** If the feature produces misleading results for users, the feature is broken — regardless of whether the code runs without errors.
+
+## Server Architecture Awareness
+
+xCloud manages **two types of servers** — never confuse them:
+
+| Server | What it is | How to access |
+|--------|-----------|---------------|
+| **xCloud app server** | Hosts the xCloud platform itself (staging.tmp1.dev) | SSH via credentials provided by user |
+| **Managed server** | Servers owned by users, managed BY xCloud (e.g., OLS Server at 107.175.2.40) | **Command Runner** in xCloud UI (Server > Management > Commands) |
+
+**CRITICAL:** Scripts like `PullSecurityAnalytics` run on the **managed server**, not the app server. To verify server-side state on managed servers:
+- Use **Command Runner** through the xCloud UI — NOT direct SSH to the app server
+- Command Runner executes commands on the managed server and shows output in the browser
+- Screenshots of Command Runner output serve as server-side evidence
+
+**Deploy script** (`scripts/deploy_to_staging.py`) deploys code to the **app server** only.
+
 ## Behavior Rules
 
 These principles guide every QA session. The specific procedures are in the steps above and reference files — these rules are about mindset.
@@ -1232,4 +1265,5 @@ These principles guide every QA session. The specific procedures are in the step
 - **Evidence for every claim** — screenshot it, log it, or query it. No claim without proof.
 - **Root cause, not symptoms** — every bug report must trace to a source file and line number
 - **End-to-end, not surface-level** — "it appears in the UI" is not verification. Perform the action and check UI + API + server state + database
+- **Logic correctness, not just code correctness** — "the code does what it says" is not enough. Ask: "does the code do what it SHOULD do?" A feature that misleads users is broken even if the code runs cleanly.
 - **Cross-reference previous QA reports** — if a prior report exists for related features, check for known issues before starting
