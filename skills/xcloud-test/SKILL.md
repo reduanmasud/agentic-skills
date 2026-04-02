@@ -33,6 +33,7 @@ TaskCreate: "Step 5: Evidence collection & screenshots"
 TaskCreate: "Step 6: Pre-verdict completeness check"
 TaskCreate: "Step 7: Write QA report"
 TaskCreate: "Step 8: Cleanup test data"
+TaskCreate: "Step 9: UX critique & competitive analysis (parallel agent)"
 ```
 
 **Rules:**
@@ -833,6 +834,163 @@ If any check fails, fix it before delivering the report.
 > Load `references/environment-setup.md` for cleanup procedures and verification queries.
 
 Delete ALL test records created during testing. Clean up in reverse order (child records first for FK constraints). Track everything in the report's "Test Data Cleanup" table.
+
+## Step 9: UX Critique, Improvement Suggestions & Competitive Analysis (PARALLEL AGENT)
+
+This step runs as a **separate agent in parallel** with the main report writing (Step 7). It does NOT block the QA report — it produces a separate **Product Improvement Addendum** appended after the QA report.
+
+### How to Run
+
+After completing Step 6.7 (close browser) and before/during Step 7 (report writing), spawn a parallel agent:
+
+```
+Agent(
+  description="UX & Product Analysis for PR #<N>",
+  prompt="You are a product analyst reviewing the UX and competitive positioning
+  of the feature in PR #<N> on the xCloud platform.
+
+  **PR Summary:** [paste from Step 1]
+  **Screenshots:** [list screenshot paths captured during testing]
+  **Feature:** [what the PR adds/changes]
+
+  Produce a Product Improvement Addendum with these sections:
+  1. UX Critique (with severity)
+  2. Human Interaction Review
+  3. Improvement Suggestions
+  4. Competitive Analysis
+  5. Feature Enhancement Ideas
+
+  Use the detailed instructions below for each section."
+)
+```
+
+### 9.1 UX Critique (Go Beyond Visual Checklist)
+
+Step 4.8 catches visual bugs (alignment, colors). This step goes deeper — **critique the user experience as a real user would experience it.**
+
+**Workflow friction:**
+- How many clicks does it take to complete the core action? Could it be fewer?
+- Are there unnecessary confirmation dialogs or intermediate steps?
+- Is the user forced to leave the current page to complete a related task?
+- Does the feature have a clear "done" state, or is the user left wondering if it worked?
+
+**Information architecture:**
+- Is the feature discoverable? Would a new user find it without being told where it is?
+- Does the menu placement make sense? (e.g., is a security feature under "Settings" or under "Security"?)
+- Are related features grouped together or scattered across different pages?
+
+**Error UX:**
+- When something fails, does the error message tell the user WHAT went wrong and HOW to fix it?
+- Are error messages specific (`"Server name must be 3-50 characters"`) or generic (`"Validation failed"`)?
+- Does the UI recover gracefully from errors, or does it get stuck in a broken state?
+
+**Cognitive load:**
+- Are there too many options/fields on one page?
+- Is the terminology consistent? (Same concept called different names in different places?)
+- Would a first-time user understand what each option does without documentation?
+
+### 9.2 Human Interaction Review
+
+**Present findings to the user and ask for their input:**
+
+```
+I've completed QA testing. Before finalizing, I'd like your input on a few UX observations:
+
+1. [Observation] — The feature requires 5 clicks to complete. Possible to reduce to 3?
+2. [Observation] — The error message says "Invalid input" without specifying which field.
+3. [Observation] — The loading state shows a blank page for 2-3 seconds before content appears.
+
+Questions for you:
+- Are any of these intentional design choices?
+- Should I add these as improvement suggestions in the report?
+- Is there anything about this feature's UX that bothers you as a user?
+```
+
+**Wait for user response.** Incorporate their feedback into the Product Improvement Addendum.
+
+### 9.3 Improvement Suggestions
+
+For each issue found in 9.1, propose a **concrete, actionable improvement:**
+
+```markdown
+| # | Current Behavior | Suggested Improvement | Effort | Impact |
+|---|-----------------|----------------------|--------|--------|
+| 1 | 5 clicks to install PHP | Add "Quick Install" button on PHP list page | Low | High |
+| 2 | Generic "Validation failed" error | Show field-specific errors inline | Medium | High |
+| 3 | Blank loading state | Add skeleton loader matching page layout | Low | Medium |
+| 4 | SSL status only shows "Active"/"Inactive" | Show expiry date + auto-renew status | Low | Medium |
+```
+
+**Effort scale:** Low (CSS/copy change), Medium (component change), High (new feature/refactor)
+**Impact scale:** Low (cosmetic), Medium (usability), High (user retention/conversion)
+
+### 9.4 Competitive Analysis
+
+Research how **competing platforms** handle the same feature. Use web search if available, otherwise use training knowledge.
+
+**Competitors to compare against:**
+- **Laravel Forge** — Laravel server management
+- **Ploi** — Server management for PHP
+- **ServerPilot** — PHP hosting platform
+- **RunCloud** — Cloud server management
+- **Cloudways** — Managed cloud hosting
+- **DigitalOcean App Platform** — PaaS comparison
+
+**For each competitor, note:**
+
+```markdown
+### Competitive Analysis: [Feature Name]
+
+| Platform | Has this feature? | How they implement it | What xCloud does better | What they do better |
+|----------|------------------|----------------------|------------------------|---------------------|
+| Laravel Forge | Yes | One-click PHP install with progress bar | xCloud has multi-stack support | Forge shows real-time install progress |
+| Ploi | Yes | Inline PHP version selector | xCloud has OPCache UI toggle | Ploi's UI is cleaner/simpler |
+| RunCloud | No | — | xCloud offers this feature | — |
+```
+
+### 9.5 Feature Enhancement Ideas
+
+Based on the competitive analysis and UX critique, propose **2-3 feature enhancements** that would make xCloud's implementation best-in-class:
+
+```markdown
+### Enhancement Ideas
+
+1. **Real-time operation progress** (inspired by Forge)
+   - Current: Toast says "Installing..." then "Installed" with no progress
+   - Proposed: WebSocket-driven progress bar showing actual install steps
+   - Why: Reduces user anxiety during long operations (30-60 seconds)
+
+2. **Smart defaults** (inspired by Ploi)
+   - Current: User must choose PHP version, extensions, settings manually
+   - Proposed: Detect framework (Laravel/WordPress) and pre-select optimal defaults
+   - Why: Reduces setup time from 5 minutes to 1 minute for common stacks
+```
+
+### Product Improvement Addendum Format
+
+The parallel agent produces this document, appended after the QA report:
+
+```markdown
+# Product Improvement Addendum — PR #<N>
+
+## UX Critique
+[findings from 9.1]
+
+## User Feedback
+[findings from 9.2 human interaction]
+
+## Improvement Suggestions
+[table from 9.3]
+
+## Competitive Analysis
+[table from 9.4]
+
+## Feature Enhancement Ideas
+[proposals from 9.5]
+
+---
+*This addendum was generated by a parallel product analysis agent. It does not affect the QA verdict.*
+```
 
 ## Common Mistakes
 
