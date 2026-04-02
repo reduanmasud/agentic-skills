@@ -387,6 +387,17 @@ After analyzing the PR (Step 1), check what server stacks and site types the PR 
 
 ## Step 3: Browser Setup
 
+### Playwright MCP Priority
+
+Two Playwright MCP servers may be available. Try them in this order:
+
+1. **Plugin version** (preferred): `mcp__plugin_playwright_playwright__browser_*`
+2. **ECC version** (fallback): `mcp__plugin_everything-claude-code_playwright__browser_*`
+
+At the start of Step 3, attempt `browser_navigate` with the plugin prefix. If it fails (tool not found, connection error), switch to the ECC prefix for all subsequent browser calls. Print which version you're using:
+- `Using Playwright MCP (plugin version)`
+- `Plugin Playwright unavailable — falling back to ECC Playwright`
+
 > Load `references/playwright-mcp-guide.md` for the full Playwright MCP tool inventory, authentication flow, wait strategies, xCloud UI patterns, and debugging tips.
 
 The core cycle for every browser interaction is: **Navigate → Snapshot → Interact → Snapshot → Screenshot**. Element refs are ephemeral — always re-snapshot after any DOM mutation before the next interaction. The reference file has the complete tool inventory and decision table for when to use each wait strategy.
