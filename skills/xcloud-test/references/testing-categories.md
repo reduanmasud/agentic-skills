@@ -18,6 +18,18 @@ Perform ALL applicable categories for every QA session. Skip a category only if 
 
 The checklists below are **starting points** — generate additional PR-specific test cases. For each changed file/feature, create test cases for: happy path, error path, edge cases, role variations, and regression of related features. See Step 4.0 in SKILL.md for minimum counts.
 
+### Business Logic Validation (BLV) Test Cases
+
+BLV test cases are generated in **Step 1.4** of the main workflow (SKILL.md). They test expected domain behavior **independent of the implementation** — verifying what the feature SHOULD do, not what the code says it does. This catches logic flaws where the implementation's algorithm or approach is fundamentally wrong even though the code runs correctly.
+
+- Tagged with `[BLV]` prefix in the test case list (e.g., `[BLV] TC-31: Single request should NOT trigger threat flag`)
+- Generated through the **five-lens methodology**: User Perspective, Domain Standards, Common Sense Thresholds, Competitor Behavior, Failure Consequences
+- Confidence-gated: High confidence findings produce test cases automatically; Medium/Low require user confirmation
+- When a BLV test case **fails**, report it as a **Logic Flaw** in Section 5.5 of the report, not as a regular bug
+- BLV test cases count toward minimum test case floors and appear in the traceability matrix
+
+See SKILL.md Step 1.4 for the complete methodology, EBS template, and confidence-gating rules.
+
 ## 4.1 Smoke Testing
 
 **Purpose:** Verify the application is stable and not broken by the PR.

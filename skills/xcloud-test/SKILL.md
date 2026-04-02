@@ -25,6 +25,7 @@ At the very start of every QA session, **immediately create tasks** using `TaskC
 
 ```
 TaskCreate: "Step 1: Analyze PR & read changed files"
+TaskCreate: "Step 1.4: Business logic validation & expected behavior analysis"
 TaskCreate: "Step 2: Deploy to staging & prepare environment"
 TaskCreate: "Step 3: Generate test cases & traceability matrix"
 TaskCreate: "Step 4: Execute browser testing on staging"
@@ -368,6 +369,129 @@ xCloud has distinct user roles with different access levels. Test with at least 
 | **Enterprise user** | Enterprise API, SSO, feature exclusions |
 | **Team member** (non-owner) | Team permissions, `hasTeamPermission()` checks |
 
+### 1.4 Business Logic Validation (MANDATORY)
+
+After understanding what the code does (Steps 1.1-1.3), independently evaluate whether the implementation's approach is **actually correct** — not just whether it runs. The code is not the source of truth for business logic; domain knowledge, industry standards, and user expectations are.
+
+**Why this step exists:** Without it, the skill tests that code does what code says. If a "Threat Detection" feature flags every IP with 1 request as a threat, the skill would test that behavior and report PASS — even though single-request threat detection is fundamentally broken. This step catches logic flaws that code-conformance testing cannot.
+
+#### 1.4.1 Independent Expected Behavior Definition
+
+Before looking at implementation details, reason from first principles: **"Given the feature name and problem description, what SHOULD the correct implementation do?"**
+
+Evaluate through five lenses, in order:
+
+**Lens A: User Perspective**
+- What would a user of a server management platform expect this feature to do?
+- If a non-technical user described this feature, what behavior would they assume?
+- What would cause user frustration or confusion if implemented differently?
+
+**Lens B: Domain Standards**
+- For security features: What do OWASP guidelines, CIS Benchmarks, or security best practices say?
+- For server management: What do Nginx/Apache/OLS official docs recommend?
+- For PHP/Node operations: What do the official docs say about this operation?
+- For billing/access control: What do SaaS billing patterns (Stripe docs, subscription model norms) dictate?
+- For database operations: What do MySQL/PostgreSQL best practices advise?
+
+**Lens C: Common Sense Thresholds**
+- Are there numeric thresholds the implementation should enforce? (e.g., rate limiting needs N events in T time, not 1 event ever)
+- Are there obvious edge cases the feature must handle? (e.g., "delete server" must have confirmation, "threat detection" must have a threshold)
+- Does the feature's name promise something the implementation doesn't deliver?
+
+**Lens D: Competitor Behavior**
+- How do Laravel Forge, Ploi, RunCloud, Cloudways handle this same feature?
+- Is xCloud's approach significantly different from the industry norm? If so, is the deviation intentional and justified?
+
+**Lens E: Failure Consequences**
+- If this implementation is wrong, what is the blast radius? (data loss, security breach, billing errors, server downtime)
+- Is the feature in a high-consequence domain (security, billing, data deletion) where "close enough" is not acceptable?
+
+**Output:** A structured Expected Behavior Specification (EBS):
+
+```
+### Expected Behavior Specification
+
+**Feature:** [name]
+**Domain:** [security / server-management / billing / UI / data / etc.]
+**Consequence tier:** [Critical / High / Medium / Low] (based on Lens E)
+
+**What this feature SHOULD do (independent of implementation):**
+1. [Expected behavior 1]
+2. [Expected behavior 2]
+3. [Expected behavior 3]
+
+**Minimum correctness criteria:**
+- [Criterion 1 — e.g., "Threat detection must require at least N events in T seconds"]
+- [Criterion 2 — e.g., "Rate limit must be configurable, not hardcoded"]
+
+**Domain references:**
+- [Standard/practice that informs these expectations]
+
+**Confidence level:** [High / Medium / Low]
+- High: Industry standards are clear and well-documented
+- Medium: Best practices exist but reasonable implementations vary
+- Low: No clear standard; this is the agent's judgment call
+```
+
+#### 1.4.2 Implementation vs. Specification Gap Analysis
+
+Compare the EBS from 1.4.1 against what the code actually does (from Steps 1.1-1.2):
+
+```
+| # | Expected Behavior (from EBS) | Actual Implementation | Match? | Gap Description | Severity |
+|---|-----------------------------|-----------------------|--------|-----------------|----------|
+| 1 | [expected] | [what code does] | MATCH / PARTIAL / MISMATCH | [description] | [severity] |
+```
+
+- **MATCH** — Implementation aligns with expected behavior
+- **PARTIAL** — Implementation covers some aspects but is incomplete
+- **MISMATCH** — Implementation contradicts or ignores expected behavior
+
+#### 1.4.3 Confidence-Gated User Confirmation
+
+The agent does NOT silently override the developer's intent. The confidence level from 1.4.1 determines the interaction mode:
+
+**High confidence (clear domain standards exist):**
+- Present mismatches as **findings** and proceed to generate BLV test cases without waiting for user confirmation.
+- Example: "The implementation flags a single request as a threat. OWASP guidelines indicate threat detection should be rate-based. I will generate test cases that verify rate-based behavior."
+- The user can override: "That's intentional, skip those test cases."
+
+**Medium confidence (best practices exist but implementations vary):**
+- Present mismatches as **questions** and ask the user to confirm before generating BLV test cases.
+- Example: "The implementation uses threshold X. Industry practice typically uses Y. Is X intentional, or should I test for Y?"
+- Wait for user response before generating correctness test cases for these items.
+
+**Low confidence (agent's judgment call, no clear standard):**
+- Present observations as **suggestions** clearly labeled as the agent's opinion.
+- Do NOT generate BLV test cases without explicit user approval.
+- Example: "I noticed the feature does X. I'm not sure if Y would be more appropriate. This is my subjective assessment. Should I test for Y?"
+
+**Rules:**
+- If the user says "it's intentional" → drop the finding, log as "Confirmed intentional design decision by user"
+- If the user says "good catch, that's a bug" → generate correctness test cases, the EBS becomes the authoritative spec
+- If the user doesn't respond → proceed with high-confidence findings only, defer medium/low to the report's Observations section
+- **Never block testing entirely on this step** — if the user doesn't engage, testing proceeds with regular test cases plus any high-confidence BLV test cases
+
+#### 1.4.4 Correctness Test Case Generation
+
+For each confirmed MISMATCH or PARTIAL gap, generate **[BLV]-tagged test cases** (Business Logic Validation) that test the EXPECTED behavior, not the implemented behavior. These are designed to FAIL if the implementation has a logic flaw.
+
+Each BLV test case has dual expected results:
+
+```
+| # | Test Case | Expected (if implementation correct) | Expected (if logic flawed) |
+|---|-----------|--------------------------------------|---------------------------|
+| BLV-1 | Send 1 legitimate request from new IP | NOT flagged as threat | FLAGGED — confirms logic flaw |
+| BLV-2 | Send 100 requests from same IP in 60s | FLAGGED as threat | May not flag — no rate logic |
+```
+
+**How BLV test cases differ from regular test cases:**
+- Regular test cases (Step 4.0 Steps A-E) verify: "Does the code do what it claims?"
+- BLV test cases verify: "Does the code do what it SHOULD do?"
+- When BLV tests FAIL, the failure is reported as a **Logic Flaw** (design error), not a regular bug. The root cause is not a coding error but a design error.
+
+**Integration:** BLV test cases are added to the test case list in Step 4.0 (via Step F), appear in the traceability matrix, and count toward minimum test case floors. They are executed during the regular testing phase (Step 4) alongside other test cases.
+
 ## Step 2: Environment Preparation
 
 > **Note:** If pipelined deployment was used (deploy agent from "Pipelined Analysis + Deployment"), cache clearing and migrations are already done. Skip to Step 2.1 (Test Infrastructure Audit) — you still need to verify stacks/site types and create test data.
@@ -472,6 +596,15 @@ Do NOT just list a few obvious cases. Use this systematic method to generate **e
 **Step E — Cross-feature regression:**
 - For each consumer found in Step 1.2, generate at least 1 test case verifying it still works
 - For each shared service/trait modified, test all callers
+
+**Step F — Correctness test cases (from Step 1.4 Business Logic Validation):**
+For each confirmed MISMATCH or PARTIAL gap in the Implementation vs. Specification comparison (Step 1.4.2), generate [BLV]-tagged test cases that verify the **expected** behavior (from the EBS), not the implemented behavior. These test cases are designed to FAIL if the implementation has a logic flaw.
+
+- Tag each test case with `[BLV]` prefix (e.g., `[BLV] TC-31: Single request should NOT trigger threat flag`)
+- Include dual expected results: "if implementation correct" vs "if logic flawed"
+- When a BLV test case fails, report it as a **Logic Flaw** in the report (Section 5), not a regular bug
+- BLV test cases count toward minimum test case floors and appear in the traceability matrix
+- If Step 1.4 found no gaps (all MATCH), this step produces zero BLV test cases — that's fine
 
 **Minimum test case counts (these are FLOORS, not targets — generate MORE):**
 
@@ -632,6 +765,7 @@ Review your executed test cases against these questions. For each "No," generate
 8. **Did I test with extreme values?** — Empty string, null, 0, -1, MAX_INT, 10MB string, unicode, special chars
 9. **Did I check error messages are user-friendly?** — No stack traces, no raw SQL errors, no "undefined" in UI
 10. **Did I test the database migration on existing data?** — Not just fresh schema, but what happens to rows that existed before the migration
+11. **Did I validate that the implementation's business logic is correct?** — Not just "does it work as coded" but "is it coded correctly?" Check the Expected Behavior Specification from Step 1.4. If any MISMATCH was deferred or unresolved, revisit it now with the additional context from testing. If you skipped Step 1.4 or found zero gaps, go through the five lenses again (User Perspective, Domain Standards, Common Sense, Competitor Behavior, Failure Consequences) with fresh eyes after seeing the feature in action.
 
 #### Deep Testing (Execute Immediately)
 
@@ -726,6 +860,16 @@ When you find a bug, trace it to the source code:
 4. **Verify in Tinker** — check database state, model attributes, policy results
 5. **Include root cause file and line** in your bug report
 
+### 5.2 Logic Flaw Root Cause (for BLV test failures)
+
+When a [BLV] test case fails, the root cause is not a coding error — it's a design decision that contradicts domain best practices or expected behavior. Document differently from regular bugs:
+
+1. **Identify the design decision** — what choice did the developer make? (e.g., "chose threshold of 1 request")
+2. **Explain why it's problematic** — reference domain standards or user expectations from the Expected Behavior Specification (Step 1.4.1)
+3. **Propose the correct approach** — what should the implementation do instead? Be concrete and specific.
+4. **Assess severity** — based on the consequence tier from the EBS (Critical/High/Medium/Low)
+5. **Note user confirmation status** — if the user was asked in Step 1.4.3 and said "it's intentional," this becomes an Observation, not a Bug/Logic Flaw
+
 ## Step 6: Evidence Collection
 
 **Every test case — PASS or FAIL — must have evidence.** A test result without evidence is an opinion, not a test result.
@@ -772,6 +916,7 @@ Before writing the final verdict, verify you've completed every mandatory step. 
 - [ ] **Server logs checked** — checked `laravel.log` after any unexpected error or 500 response
 - [ ] **Failure paths considered** — tested or reasoned about what happens when the operation fails, and verified status doesn't get stuck
 - [ ] **Double-submit checked** — verified rapid clicks or form resubmission don't cause duplicate actions
+- [ ] **Business logic validated** — confirmed that the feature's algorithm/approach matches domain best practices and the Expected Behavior Specification from Step 1.4. Any MISMATCH gaps are either confirmed as logic flaws (with evidence), confirmed as intentional by the user, or documented in observations.
 
 ### Coverage Gate (MANDATORY)
 
@@ -1019,6 +1164,7 @@ The parallel agent's output is **included as Section 12 in the main QA report** 
 | **Too many "Areas Not Fully Tested"** | Report has 5+ untested areas, treated as acceptable | Maximum 3 skipped areas per report. Convert skips to partial tests (Option 1) or user-assisted tests (Option 2). |
 | **Self-approving Option 3 (skip)** | Agent decides to skip a test without asking the user | Option 3 requires explicit user approval. Always attempt Option 1 (partial testing) first. |
 | **Vague test cases** | "Verify the feature works for different roles" — no specific scenario | Be specific: "Log in as free user (email), navigate to /servers/5/php, click Install PHP 8.3, verify upgrade prompt shown" |
+| **Testing only the implementation's behavior** | "Code says 1 request = threat, test confirms it" — you validated the wrong thing. If the algorithm is wrong, code-conformance tests pass while users suffer. | Define expected behavior independently using the five lenses in Step 1.4. Generate [BLV] test cases that test CORRECT behavior, not implemented behavior. When BLV tests fail, you found a logic flaw the regular tests would never catch. |
 
 ## Progress Reporting (MANDATORY)
 
@@ -1033,6 +1179,12 @@ Print these at the indicated moments. Keep each message to **one line**.
 - `Reading <filename> for full context...`
 - `Cross-feature impact: found <N> consumers of changed code`
 - `Analysis complete — <N> features affected, <N> UI pages to test`
+
+**Step 1.4 (Business Logic Validation):**
+- `Evaluating business logic: defining expected behavior for <feature>...`
+- `Business logic check: found <N> potential logic gaps (confidence: <high/medium/low>)`
+- `Asking user to confirm <N> medium-confidence findings...`
+- `Business logic validation complete — <N> correctness [BLV] test cases generated`
 
 **Step 2 (Deploy/Prep):**
 - `Deploying branch <name> to staging via SSH...`

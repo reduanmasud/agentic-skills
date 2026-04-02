@@ -166,6 +166,39 @@ For each bug, use this exact structure — every field is required:
 
 The screenshot must be embedded inline using `![alt](path)` right after "Actual Result". Scroll to the specific element demonstrating the bug before capturing. Never write just the filename.
 
+### Section 5.5: Logic Flaws (Business Logic Validation)
+
+If Step 1.4 generated [BLV] test cases and any of them failed, report the logic flaws here. Logic flaws are distinct from regular bugs — they are design decisions that contradict domain best practices or expected behavior, not coding errors. If no BLV test cases were generated, or all passed, write: "No logic flaws identified."
+
+For each logic flaw:
+
+```
+### Logic Flaw #1: {Descriptive Title}
+
+**Severity:** Critical / High / Medium / Low (from consequence tier in EBS)
+**Confidence:** High / Medium / Low (from Expected Behavior Specification)
+
+**Expected behavior:** {What the feature SHOULD do, based on domain standards/user expectations}
+
+**Actual behavior:** {What the implementation does instead}
+
+**Domain basis:** {Why the expected behavior is correct — reference standards, practices, competitor behavior}
+
+**Evidence:** {BLV test case results that confirmed the flaw — screenshots, SSH output, Tinker queries}
+
+![Evidence screenshot](qa-screenshots/XX-blv-evidence.png)
+
+**Suggested fix:** {Concrete recommendation for what the code should do instead}
+
+**Developer response:** {If asked in Step 1.4.3: "Confirmed as intentional" / "Acknowledged as oversight" / "Not asked (high confidence)"}
+```
+
+**Severity guidelines for logic flaws:**
+- **Critical:** Security feature with wrong logic (e.g., threat detection that flags legitimate traffic), billing calculation errors, data loss scenarios
+- **High:** Feature that works but produces incorrect results, missing threshold/rate logic, incomplete algorithm
+- **Medium:** Feature that mostly works but misses edge cases the domain requires, missing configuration for hardcoded values
+- **Low:** Minor deviation from industry norm with low user impact
+
 ### Section 6: Observations (Pre-existing Issues)
 
 Document pre-existing issues separately from PR bugs. If none, write "No pre-existing issues observed."
@@ -257,6 +290,7 @@ Before saving the report, verify every item below. If any item fails, go back an
 - [ ] **Test category verdicts are present** — every tested category heading ends with "— PASS" or "— FAIL"
 - [ ] **Cleanup table is filled** — either cleanup records or "No test data was created"
 - [ ] **Final verdict has reasoning** — not just "PASS" but why, referencing specific findings
+- [ ] **Logic flaws reported if applicable** — if Step 1.4 generated BLV test cases, their results appear in the test case tables and any failed BLV tests are reported in Section 5.5 (Logic Flaws)
 
 ---
 
