@@ -392,11 +392,11 @@ After analyzing the PR (Step 1), check what server stacks and site types the PR 
 Two Playwright MCP servers may be available. Try them in this order:
 
 1. **Plugin version** (preferred): `mcp__plugin_playwright_playwright__browser_*`
-2. **ECC version** (fallback): `mcp__plugin_everything-claude-code_playwright__browser_*`
+2. **Standalone Playwright** (fallback): `mcp__playwright__browser_*`
 
-At the start of Step 3, attempt `browser_navigate` with the plugin prefix. If it fails (tool not found, connection error), switch to the ECC prefix for all subsequent browser calls. Print which version you're using:
+At the start of Step 3, attempt `browser_navigate` with the plugin prefix. If it fails (tool not found, connection error), switch to the standalone prefix for all subsequent browser calls. Print which version you're using:
 - `Using Playwright MCP (plugin version)`
-- `Plugin Playwright unavailable — falling back to ECC Playwright`
+- `Plugin Playwright unavailable — falling back to standalone Playwright`
 
 > Load `references/playwright-mcp-guide.md` for the full Playwright MCP tool inventory, authentication flow, wait strategies, xCloud UI patterns, and debugging tips.
 

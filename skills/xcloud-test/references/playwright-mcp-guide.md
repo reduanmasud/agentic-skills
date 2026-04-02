@@ -7,7 +7,7 @@ Two Playwright MCP servers may be available. **Prefer the plugin version:**
 | Priority | Prefix | When to use |
 |----------|--------|-------------|
 | 1st (preferred) | `mcp__plugin_playwright_playwright__` | Default — try this first |
-| 2nd (fallback) | `mcp__plugin_everything-claude-code_playwright__` | If plugin version fails |
+| 2nd (fallback) | `mcp__playwright__` | If plugin version fails |
 
 All tool names below use short names (e.g., `browser_navigate`). Prepend the active prefix. Available tools:
 
