@@ -536,8 +536,68 @@ For a full QA session, work through all tiers. For a quick verification (user sa
 - **4.17 Combinatorial / Pairwise Testing** — parameter interaction bugs across stack × type × role × plan combinations
 
 ### Quality & Resilience
-- **4.8 Usability Testing** — layouts, navigation, error messages, loading states
+- **4.8 Visual & UX Critique** — see detailed checklist below
 - **4.9 Performance Observations** — load times, N+1 queries, heavy operations
+
+### 4.8 Visual & UX Critique (MANDATORY)
+
+After functional testing, take screenshots of every page/modal the PR touches and critique the visual design and user experience. Use `browser_take_screenshot` on each affected page, then analyze the screenshot for issues.
+
+#### Visual Checklist (check EVERY item on each affected page)
+
+**Alignment & Spacing:**
+- [ ] Elements are aligned consistently (left-aligned labels, right-aligned actions)
+- [ ] Spacing between elements is uniform (no random gaps or cramped sections)
+- [ ] Form fields have consistent widths and heights
+- [ ] Buttons are aligned with their related form fields
+- [ ] Modal content is properly centered and padded
+- [ ] Table columns are properly aligned (text left, numbers right)
+
+**Colors & Contrast:**
+- [ ] Text is readable against its background (sufficient contrast)
+- [ ] Success/error/warning states use the correct colors (green/red/yellow)
+- [ ] Disabled elements look visually distinct (grayed out, not just non-clickable)
+- [ ] Active/selected states are visually obvious
+- [ ] Links are distinguishable from plain text
+- [ ] Dark/light mode consistency (if applicable)
+
+**Typography:**
+- [ ] Headings have correct hierarchy (h1 > h2 > h3, not random sizes)
+- [ ] Font sizes are consistent for same-level elements
+- [ ] No text truncation cutting off important content
+- [ ] Long text wraps properly (no overflow or horizontal scroll)
+- [ ] Labels and placeholders are not competing visually
+
+**Layout & Responsiveness:**
+- [ ] Page content doesn't overflow its container
+- [ ] No unexpected horizontal scrollbars
+- [ ] Empty states show helpful messages (not blank screens)
+- [ ] Loading states show spinners/skeletons (not frozen UI)
+- [ ] Content doesn't jump/shift when data loads (layout stability)
+
+**Interactive Elements:**
+- [ ] Buttons have hover states
+- [ ] Clickable elements have cursor: pointer
+- [ ] Form validation errors appear next to the correct field
+- [ ] Toast/notification messages are readable and don't overlap content
+- [ ] Dropdown menus don't extend beyond viewport
+- [ ] Modals have proper backdrop and close functionality
+
+**Consistency with xCloud design:**
+- [ ] New UI matches the existing xCloud design patterns (same card styles, button styles, table styles)
+- [ ] Icons are from the same icon set used elsewhere in xCloud
+- [ ] Color palette matches the existing theme
+- [ ] Component patterns match (DataTableV2, cards, modals, tabs, etc.)
+
+#### How to Report Visual Issues
+
+For each visual issue found, include:
+1. **Screenshot** with the problem area visible
+2. **What's wrong** — specific description (e.g., "Submit button is 20px lower than Cancel button")
+3. **Expected** — what it should look like (e.g., "Both buttons aligned on same baseline")
+4. **Severity** — LOW (cosmetic) or MEDIUM (affects usability)
+
+**Note:** Visual issues are typically LOW or MEDIUM severity — they don't block merge but should be tracked. Only mark as HIGH if the issue makes the feature unusable (e.g., button hidden behind another element, text completely unreadable).
 - **4.10 Error Recovery** — failure paths, retry behavior, queue job failures
 - **4.11 State Transitions** — status flows, duplicate action prevention, status consistency
 - **4.12 Idempotency / Double-Submit** — rapid clicks, form resubmission, script idempotency
