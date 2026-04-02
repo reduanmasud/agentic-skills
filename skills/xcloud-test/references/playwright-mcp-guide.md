@@ -164,30 +164,16 @@ If ALL three — `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_
 
 If any of the 3 vars is missing, fall back to local paths: `![alt](qa-screenshots/XX-description.png)`
 
-**Upload command (run after each screenshot):**
+**Batch upload (preferred — run once after all screenshots are captured):**
 ```bash
-curl -s -X POST "https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload" \
-  -F "file=@qa-screenshots/XX-description.png" \
-  -F "upload_preset=ml_default" \
-  -F "folder=qa-reports" \
-  -F "api_key=${CLOUDINARY_API_KEY}" \
-  -F "timestamp=$(date +%s)" \
-  -F "signature=$(echo -n "folder=qa-reports&timestamp=$(date +%s)&upload_preset=ml_default${CLOUDINARY_API_SECRET}" | shasum -a 256 | head -c 64)" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['secure_url'])"
+python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py --dir qa-screenshots --pr <PR_NUMBER>
 ```
 
-**If signed upload fails**, fall back to unsigned upload:
-```bash
-curl -s -X POST "https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload" \
-  -F "file=@qa-screenshots/XX-description.png" \
-  -F "upload_preset=ml_default" \
-  -F "folder=qa-reports" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['secure_url'])"
-```
+This uploads all screenshots in the directory, prints progress, and outputs a ready-to-paste markdown table for the report. Use `--json` flag for JSON output only.
 
 **In the report, use the Cloudinary URL:**
 ```markdown
-![Dashboard smoke test](https://res.cloudinary.com/xxxx/image/upload/v1234/qa-reports/01-dashboard-smoke.png)
+![Dashboard smoke test](https://res.cloudinary.com/xxxx/image/upload/v1234/qa-pr1234/01-dashboard-smoke.png)
 ```
 
 ### Naming Convention

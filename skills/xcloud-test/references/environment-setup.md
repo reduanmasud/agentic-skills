@@ -71,15 +71,43 @@ ssh {user}@{host} "cd {app-path} && php artisan config:clear && php artisan cach
 
 ## Deploying a PR Branch to the Staging Server
 
-After local checkout (`gh pr checkout <PR_NUMBER>`), deploy the branch to the staging server:
+After local checkout (`gh pr checkout <PR_NUMBER>`), deploy the branch to the staging server.
 
-### 1. Get the Branch Name
+### Automated Deploy Script (Preferred)
+
+Use the deploy script for a one-command deployment that handles all edge cases:
+
+```bash
+python3 ~/.claude/skills/xcloud-test/scripts/deploy_to_staging.py \
+  --pr <PR_NUMBER> \
+  --ssh "{user}@{host}" \
+  --path "{app-path}"
+```
+
+The script automatically:
+- Detects PR state (open vs merged) and chooses the right branch
+- Handles merged PRs by deploying `master` if the PR branch was deleted
+- Stashes uncommitted changes if needed
+- Clears all Laravel caches
+- Runs migrations
+- Conditionally runs `composer install` and `npm install && npm run build` based on changed files
+- Verifies the deployment matches the PR
+
+**Options:**
+- `--skip-build` — Skip npm install & build (backend-only PRs)
+- `--skip-migrate` — Skip database migrations
+
+### Manual Deploy Steps (Fallback)
+
+If the script fails or you need more control:
+
+#### 1. Get the Branch Name
 
 ```bash
 gh pr view <PR_NUMBER> --json headRefName -q '.headRefName'
 ```
 
-### 2. Deploy via SSH
+#### 2. Deploy via SSH
 
 ```bash
 ssh {user}@{host} "cd {app-path} && git fetch origin && git checkout {branch} && git pull origin {branch}"
@@ -92,7 +120,7 @@ ssh {user}@{host} "cd {app-path} && git stash && git fetch origin && git checkou
 
 If the branch checkout fails due to merge conflicts, report the conflict to the user and skip this PR.
 
-### 3. Post-Deploy Steps
+#### 3. Post-Deploy Steps
 
 After checking out the branch, run these in order:
 
@@ -117,7 +145,7 @@ gh pr diff <PR_NUMBER> --name-only
 | Any file in `resources/js/`, `resources/css/`, `package.json`, or `package-lock.json` | `ssh {user}@{host} "cd {app-path} && npm install && npm run build"` |
 | Neither | Skip — no dependency or frontend changes |
 
-### 4. Verify Deployment
+#### 4. Verify Deployment
 
 ```bash
 # Confirm the correct branch and commit are deployed
