@@ -28,6 +28,7 @@ TaskCreate: "Step 1: Analyze PR & read changed files"
 TaskCreate: "Step 2: Deploy to staging & prepare environment"
 TaskCreate: "Step 3: Generate test cases & traceability matrix"
 TaskCreate: "Step 4: Execute browser testing on staging"
+TaskCreate: "Step 4.5: Gap evaluation & deep testing"
 TaskCreate: "Step 5: Evidence collection & screenshots"
 TaskCreate: "Step 6: Pre-verdict completeness check"
 TaskCreate: "Step 7: Write QA report"
@@ -416,13 +417,59 @@ For each change in the PR, derive test cases covering:
 
 **UI feature coverage rule:** Cross-reference the PR's changes with the feature map in `references/xcloud-feature-map.md` to identify all UI management pages affected. Generate test cases that navigate to and interact with these pages. If a feature has a UI toggle/button (e.g., WordPress debug mode, caching, SSL), the test case must use the UI — not CLI commands.
 
-**Minimum test case counts:**
+### Exhaustive Test Case Generation Method
 
-| PR Scope | Minimum |
-|----------|---------|
-| Small (1-3 files, cosmetic/config) | 10 |
-| Medium (4-10 files, feature/fix) | 20 |
-| Large (10+ files, major feature) | 30+ |
+Do NOT just list a few obvious cases. Use this systematic method to generate **every possible** test case:
+
+**Step A — Per changed method/function, generate ALL of these:**
+1. Happy path with typical valid input
+2. Happy path with minimum valid input
+3. Happy path with maximum valid input
+4. Empty/null/missing input for each parameter
+5. Wrong type for each parameter (string where int expected, etc.)
+6. Boundary: exact min, min-1, min+1
+7. Boundary: exact max, max-1, max+1
+8. Special characters: `<script>`, `' OR 1=1`, `../../../`, unicode, emojis
+9. Extremely long input (10x the expected max)
+10. Concurrent/duplicate request (double-click, API replay)
+
+**Step B — Per changed UI page/component, generate ALL of these:**
+1. Page loads without errors (console clean, no 500s)
+2. All interactive elements work (buttons, toggles, dropdowns, modals)
+3. Form submission with valid data
+4. Form submission with invalid data (each field individually)
+5. Form submission with all fields empty
+6. Loading states and spinners appear correctly
+7. Success/error toasts/notifications display
+8. Page works after browser refresh (no stale state)
+9. Mobile/responsive layout (if applicable)
+
+**Step C — Per user role, repeat ALL relevant tests from A and B:**
+- Paid user (full access)
+- Free user (billing guards should block)
+- Team member non-owner (permission checks)
+- Admin user (Gate::before bypass check)
+- Unauthenticated (redirect to login)
+- Wrong team (IDOR — User A accessing User B's resources)
+
+**Step D — Per server stack/site type touched by the PR:**
+- Repeat server-side operations on each affected stack (Nginx, OLS, Docker, OpenClaw)
+- Verify stack-specific behavior differences
+- Check site-type-specific features
+
+**Step E — Cross-feature regression:**
+- For each consumer found in Step 1.2, generate at least 1 test case verifying it still works
+- For each shared service/trait modified, test all callers
+
+**Minimum test case counts (these are FLOORS, not targets — generate MORE):**
+
+| PR Scope | Minimum | Target |
+|----------|---------|--------|
+| Small (1-3 files, cosmetic/config) | 15 | 25+ |
+| Medium (4-10 files, feature/fix) | 30 | 50+ |
+| Large (10+ files, major feature) | 50 | 80+ |
+
+**If you generate fewer than the minimum, you are missing cases.** Go back through Steps A-E and check what you missed. The target column is what a thorough QA session should aim for.
 
 Present the test case list before executing. Each test case must specify: what to test, expected result, and what evidence to collect.
 
@@ -494,6 +541,45 @@ For a full QA session, work through all tiers. For a quick verification (user sa
 - **4.10 Error Recovery** — failure paths, retry behavior, queue job failures
 - **4.11 State Transitions** — status flows, duplicate action prevention, status consistency
 - **4.12 Idempotency / Double-Submit** — rapid clicks, form resubmission, script idempotency
+
+### 4.18 Post-Testing Gap Evaluation & Deep Testing (MANDATORY)
+
+After completing all test categories above, **STOP and evaluate what you missed** before proceeding to Step 5. This is a second pass — not a repeat of the first pass.
+
+#### Gap Analysis Checklist
+
+Review your executed test cases against these questions. For each "No," generate and execute additional test cases:
+
+1. **Did I test every changed method with BOTH valid and invalid input?** — Not just "does it work" but "does it reject bad input correctly?"
+2. **Did I test every role that could access this feature?** — If you only tested as paid user, you missed free user, team member, admin, unauthenticated
+3. **Did I test what happens when the operation FAILS?** — Network error, timeout, invalid server state, missing dependencies, database constraint violation
+4. **Did I test the feature with pre-existing data vs fresh data?** — Does it work on a server that already has the package installed? On an empty database?
+5. **Did I test concurrent access?** — Two users accessing the same resource, double-click, race conditions
+6. **Did I verify every consumer found in Step 1.2?** — If 4 controllers use the changed service, did I test all 4?
+7. **Did I test the UI after browser refresh?** — Form state persistence, URL-direct access, back button
+8. **Did I test with extreme values?** — Empty string, null, 0, -1, MAX_INT, 10MB string, unicode, special chars
+9. **Did I check error messages are user-friendly?** — No stack traces, no raw SQL errors, no "undefined" in UI
+10. **Did I test the database migration on existing data?** — Not just fresh schema, but what happens to rows that existed before the migration
+
+#### Deep Testing (Execute Immediately)
+
+For each gap found above, **generate new test cases and execute them now** — don't just note them for later. The PR is still deployed, the browser is still open. This is your last chance to catch bugs before the report.
+
+**Print progress:**
+```
+Gap evaluation: found 5 missing test cases
+[TC-31/35] Deep: Free user accessing PHP config page → FAIL: 500 instead of upgrade prompt
+[TC-32/35] Deep: Double-click install PHP 8.3 button → PASS: button disabled after first click
+[TC-33/35] Deep: Refresh page after toggling OPCache → PASS: state persists
+[TC-34/35] Deep: Empty server name in settings → PASS: validation error shown
+[TC-35/35] Deep: Team member (non-owner) accessing server settings → PASS: correctly blocked
+```
+
+#### Minimum Gap Rules
+
+- **You MUST find at least 3 additional test cases** in this step. If you found zero gaps, you didn't look hard enough — go through the checklist again more carefully.
+- **Add deep test cases to the traceability matrix** — they count toward total coverage.
+- **If a gap test FAILS, it's a new bug** — add it to the report with full root cause analysis.
 
 ### 4.13 Manual Testing Escalation (MANDATORY)
 
