@@ -212,21 +212,9 @@ This is the original sequential flow, used when the user chooses "Sequential" in
 - **Migration conflicts:** If a PR's migrations conflict with a previous PR's changes on the same environment, report the conflict to the user and skip that PR.
 - **Parallel agent failures:** If a parallel testing agent crashes or times out, its report is marked as "Agent Failed — requires manual re-test" in the summary.
 
-### 0.6 Local Checkout & Server Deployment (Per PR)
+### 0.6 Server Deployment (Per PR)
 
-#### Local Checkout
-
-Before testing each PR, check out the branch locally so the Read/Grep/Explore tools work on the PR's source code:
-
-```bash
-gh pr checkout <PR_NUMBER>
-```
-
-If the checkout fails due to uncommitted local changes, stash them first:
-
-```bash
-git stash && gh pr checkout <PR_NUMBER>
-```
+> **Note:** PR source code is accessed via a worktree-isolated agent — see "Pipelined Analysis + Deployment" or Step 1 (non-pipelined). Never check out PR branches directly in the main session.
 
 #### Server Deployment
 
@@ -309,7 +297,39 @@ Both agents run concurrently. When both complete:
 
 ## Step 1: Gather Context
 
-> **Note:** If pipelined analysis was used (agent from the section above), skip Step 1 entirely — the analysis results are already available. Proceed to Step 3 (Browser Setup) since deployment is also done.
+> **If pipelined analysis was used:** skip Step 1 entirely — the analysis results are already available. Proceed to Step 3 (Browser Setup) since deployment is also done.
+>
+> **If you skipped the pipelined path:** spawn a worktree analysis agent first (template below), then use its output for Steps 1.1–1.4. Do NOT read PR files directly from the main session — `gh pr checkout` in the main session switches your active branch.
+>
+> ```
+> Agent(
+>   description="Analyze PR #<N>",
+>   isolation="worktree",
+>   prompt="Analyze PR #<N> for xcloud-test QA.
+>   1. gh pr checkout <N>
+>   2. gh pr diff <N> --name-only — list changed files
+>   3. Read changed files FULLY (not just diff hunks — read the entire file):
+>      - Controllers: all actions, middleware, how the changed method fits in
+>      - Models: relationships, casts, accessors, scopes the PR touches
+>      - Policies: all authorization methods, not just the changed one
+>      - Vue components: props, computed properties, lifecycle, full template
+>      - Migrations: all column changes, indexes, constraints
+>      - Services/Actions/Scripts: complete workflow, not just the changed method
+>   4. Cross-reference with references/xcloud-feature-map.md to identify affected UI pages
+>   5. Search systematically for ALL consumers of changed code:
+>      - For every changed function, class, constant, or template
+>      - Grep across: Controllers, Services, Jobs, Form Requests, Policies, Blade scripts, Vue, Models, Routes
+>      - Trace call chains end-to-end: Route → Controller → Service → Job → Script
+>      - Check for asymmetric behavior (frontend guards something the backend doesn't)
+>   6. Return structured analysis:
+>      - Changed files + what changed in each (with full-context understanding)
+>      - Affected features and UI pages
+>      - All cross-feature consumers found and whether they handle the change correctly
+>      - PR summary (what / why / how)
+>      - Suggested test categories
+>      - Business logic observations (five-lens review from Step 1.4)"
+> )
+> ```
 
 ### 1.1 Analyze the PR
 
@@ -1285,3 +1305,4 @@ These principles guide every QA session. The specific procedures are in the step
 - **End-to-end, not surface-level** — "it appears in the UI" is not verification. Perform the action and check UI + API + server state + database
 - **Logic correctness, not just code correctness** — "the code does what it says" is not enough. Ask: "does the code do what it SHOULD do?" A feature that misleads users is broken even if the code runs cleanly.
 - **Cross-reference previous QA reports** — if a prior report exists for related features, check for known issues before starting
+- **PR source code is accessed via worktree agents only** — never run `gh pr checkout` in the main session. Direct checkout switches the active branch and breaks working state regardless of which directory Claude Code is running from. All PR file reading happens inside an `isolation="worktree"` agent.
