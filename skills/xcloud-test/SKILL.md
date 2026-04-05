@@ -307,21 +307,23 @@ Both agents run concurrently. When both complete:
 >   isolation="worktree",
 >   prompt="Analyze PR #<N> for xcloud-test QA.
 >   1. gh pr checkout <N>
->   2. gh pr diff <N> --name-only — list changed files
->   3. Read changed files FULLY (not just diff hunks — read the entire file):
+>   2. gh pr view <N> — read PR title, description, and linked issues for the "why"
+>   3. gh pr diff <N> --name-only — list changed files
+>   4. gh pr diff <N> --name-only | grep -i migration — flag migration files
+>   5. Read changed files FULLY (not just diff hunks — read the entire file):
 >      - Controllers: all actions, middleware, how the changed method fits in
 >      - Models: relationships, casts, accessors, scopes the PR touches
 >      - Policies: all authorization methods, not just the changed one
 >      - Vue components: props, computed properties, lifecycle, full template
 >      - Migrations: all column changes, indexes, constraints
 >      - Services/Actions/Scripts: complete workflow, not just the changed method
->   4. Cross-reference with references/xcloud-feature-map.md to identify affected UI pages
->   5. Search systematically for ALL consumers of changed code:
+>   6. Cross-reference with references/xcloud-feature-map.md to identify affected UI pages
+>   7. Search systematically for ALL consumers of changed code:
 >      - For every changed function, class, constant, or template
 >      - Grep across: Controllers, Services, Jobs, Form Requests, Policies, Blade scripts, Vue, Models, Routes
 >      - Trace call chains end-to-end: Route → Controller → Service → Job → Script
 >      - Check for asymmetric behavior (frontend guards something the backend doesn't)
->   6. Return structured analysis:
+>   8. Return structured analysis:
 >      - Changed files + what changed in each (with full-context understanding)
 >      - Affected features and UI pages
 >      - All cross-feature consumers found and whether they handle the change correctly
@@ -335,12 +337,7 @@ Both agents run concurrently. When both complete:
 
 #### Step A: Get the PR overview and diff
 
-```bash
-gh pr view <PR_NUMBER>
-gh pr diff <PR_NUMBER> --name-only
-gh pr diff <PR_NUMBER>
-gh pr diff <PR_NUMBER> --name-only | grep -i migration
-```
+> This step runs inside the worktree agent (steps 2–4 of the agent template above). The agent runs `gh pr view`, `gh pr diff`, and the migration grep, then reads the source files — all inside the isolated worktree.
 
 From the diff, identify:
 - **Modified controllers, models, routes, policies, requests** — what features are affected
