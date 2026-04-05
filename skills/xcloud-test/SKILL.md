@@ -24,24 +24,38 @@ For each PR you test, you will check out the code locally and deploy it to the s
 At the very start of every QA session, **immediately create tasks** using `TaskCreate` so the user can see step-by-step progress. Create these tasks before doing anything else:
 
 ```
-TaskCreate: "Step 1: Analyze PR & read changed files"
-TaskCreate: "Step 1.4: Business logic validation & expected behavior analysis"
-TaskCreate: "Step 2: Deploy to staging & prepare environment"
-TaskCreate: "Step 3: Generate test cases & traceability matrix"
-TaskCreate: "Step 4: Execute browser testing on staging"
-TaskCreate: "Step 4.5: Gap evaluation & deep testing"
-TaskCreate: "Step 5: Evidence collection & screenshots"
-TaskCreate: "Step 6: Pre-verdict completeness check"
-TaskCreate: "Step 7: Write QA report"
-TaskCreate: "Step 8: Cleanup test data"
-TaskCreate: "Step 6.8: UX critique & competitive analysis (parallel with testing)"
+TaskCreate: "Step 1/9: Analyze PR & read changed files"             ← parallel with Step 2
+TaskCreate: "Step 2/9: Deploy to staging"                           ← parallel with Step 1
+TaskCreate: "Step 3/9: Business logic validation + test case generation"  ← BLV + standard TCs in parallel
+TaskCreate: "Step 4/9: Browser setup & execute testing"             ← UX agent spawns in background here
+TaskCreate: "Step 5/9: Gap evaluation & pre-verdict check"          ← merged step
+TaskCreate: "Step 6/9: Write QA report"                             ← parallel with Step 7 + screenshot upload
+TaskCreate: "Step 7/9: Cleanup test data"                           ← parallel with Step 6
+TaskCreate: "Step 8/9: UX critique & competitive analysis"          ← background agent, starts during Step 4
+TaskCreate: "Step 9/9: Upload screenshots & finalize report"        ← parallel with Step 6
 ```
 
-**Rules:**
+**Parallelism rules (automatic — never ask the user):**
+- **Steps 1+2 ALWAYS run in parallel** — spawn analysis agent (worktree) + deploy agent in one message
+- **Step 3: BLV + standard test cases run in parallel** — standard TCs (Steps A-E) don't need BLV output; only Step F (correctness TCs) waits for BLV
+- **Step 8 (UX) runs in background** — spawn after first screenshots in Step 4, completes before Step 6
+- **Steps 6+7+9 run in parallel** — report writing, cleanup, and screenshot upload are independent
 - Mark each task `in_progress` when you start it, `completed` when done
-- If pipelined (analysis + deploy run in parallel), mark both Step 1 and Step 2 as `in_progress` simultaneously
 - For multi-PR parallel mode, create a top-level task per PR (e.g., "PR #1234: Testing") with subtasks
 - These indicators are the user's primary way to track progress — never skip them
+
+### Parallelism Flow (Single PR)
+
+```
+Step 1 (Analyze) ──┐
+                   ├─ both complete ─→ Step 3 (BLV + Standard TCs in parallel) ─→ Step 4 (Testing + UX background)
+Step 2 (Deploy) ───┘                                                                      │
+                                                                              Step 5 (Gap eval + Pre-verdict)
+                                                                                          │
+                                                                    ┌─────────────────────┼─────────────────────┐
+                                                              Step 6 (Report)      Step 7 (Cleanup)      Step 9 (Upload)
+                                                                    └─────────────────────┴─────────────────────┘
+```
 
 ## Step 0: PR Intake & Mode Selection
 
@@ -892,7 +906,23 @@ When a [BLV] test case fails, the root cause is not a coding error — it's a de
 
 ### Cloudinary Screenshot Upload
 
-Before taking screenshots, check if all 3 Cloudinary env vars are available: `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`. If all 3 are set, **upload every screenshot to Cloudinary** after capturing and use the Cloudinary URL in the report instead of local paths. This makes reports readable on GitHub. See `references/playwright-mcp-guide.md` "Cloudinary Upload" for the env var check and upload commands.
+**Before taking any screenshots**, check if all 3 Cloudinary env vars are set (run this Bash command once at the start of testing):
+
+```bash
+echo "CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME:-(not set)}"
+echo "CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY:-(not set)}"
+echo "CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET:-(not set)}"
+```
+
+- **If all 3 are set:** Capture screenshots locally to `qa-screenshots/`, then **batch upload after all screenshots are captured** (Step 9) using the skill's Python script:
+  ```bash
+  python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py --dir qa-screenshots --pr <PR_NUMBER>
+  ```
+  The script prints each URL and a ready-to-paste markdown table. Use the returned Cloudinary URLs in the report, **not** local paths.
+
+- **If any var is missing:** Fall back to local paths in the report: `![alt text](qa-screenshots/XX-description.png)`
+
+**Never attempt manual curl uploads or custom upload code** — always use the script above.
 
 ### Evidence to Collect
 - **Screenshots** saved to `qa-screenshots/` then uploaded to Cloudinary (if available) — scroll to the specific element that shows the bug or fix before capturing. Before/after screenshots must be visually distinct. Capture toasts/notifications immediately before they auto-dismiss.
@@ -902,7 +932,7 @@ Before taking screenshots, check if all 3 Cloudinary env vars are available: `CL
 - **Database state** via Tinker queries
 - **Server-side state** via SSH or Command Runner (packages, configs, services, binaries)
 
-## Step 6.5: Pre-Verdict Completeness Check (MANDATORY)
+## Step 5: Gap Evaluation + Pre-Verdict Completeness Check (MANDATORY — merged step)
 
 Before writing the final verdict, verify you've completed every mandatory step. If any item is unchecked, **go back and complete it** before proceeding to the report.
 
@@ -940,17 +970,15 @@ Before writing the verdict, calculate your coverage:
 
 A PASS verdict without completing all items is incomplete QA.
 
-## Step 6.7: Close Browser
+## Close Browser (after Step 5, before Step 6)
 
-After all testing and evidence collection is complete, close the browser before writing the report:
+After all testing and evidence collection is complete, **close the browser using the Playwright MCP `browser_close` tool** before writing the report. This is a mandatory tool call — not a conceptual step:
 
-```
-browser_close
-```
+Use the `browser_close` tool (the exact MCP tool name depends on which Playwright plugin is active — use `mcp__playwright__browser_close` or `mcp__plugin_playwright_playwright__browser_close`, whichever is available in the current session).
 
 All screenshots have been captured, console messages checked, and network requests logged — the browser is no longer needed. Closing it frees resources, prevents accidental interactions during report writing, and ensures a fresh session if testing multiple PRs sequentially.
 
-## Step 7: Final Report
+## Step 6: Final Report (parallel with Step 7 cleanup + Step 9 screenshot upload)
 
 > Load `references/report-template.md` for the mandatory report structure, image embedding rules, severity classification, and examples of strong reports.
 
@@ -962,7 +990,7 @@ The report template defines **13 mandatory sections** in a fixed order. Copy the
 
 **Image embedding is critical:** Every screenshot must be embedded inline using `![descriptive alt text](qa-screenshots/XX-name.png)` — right where it's relevant (inside bug reports, inside test results). Writing just the filename or path without the `![alt](path)` syntax makes the report unreadable.
 
-## Step 7.5: Report Validation (MANDATORY)
+## Step 6.5: Report Validation (MANDATORY)
 
 After writing the report, run through the **Post-Report Validation Checklist** in `references/report-template.md`. This catches format drift, missing sections, and bare filenames before the report is finalized.
 
@@ -974,15 +1002,15 @@ Quick self-check — scan the report for these red flags:
 
 If any check fails, fix it before delivering the report.
 
-## Step 8: Cleanup
+## Step 7: Cleanup (parallel with Step 6 report writing)
 
 > Load `references/environment-setup.md` for cleanup procedures and verification queries.
 
 Delete ALL test records created during testing. Clean up in reverse order (child records first for FK constraints). Track everything in the report's "Test Data Cleanup" table.
 
-## Step 6.8: UX Critique, Improvement Suggestions & Competitive Analysis (PARALLEL AGENT)
+## Step 8: UX Critique, Improvement Suggestions & Competitive Analysis (BACKGROUND AGENT)
 
-This step runs as a **separate agent in parallel with the ongoing testing** (Steps 4-6). Spawn it after Step 3 (browser setup) when you have the first screenshots. Its output is **included in the main QA report** (Step 7), not a separate document.
+This step runs as a **background agent in parallel with testing** (Step 4). Spawn it automatically after first screenshots are captured during Step 4. Its output is **included in the main QA report** (Step 6), not a separate document.
 
 ### How to Run
 
@@ -1135,7 +1163,7 @@ The parallel agent's output is **included as Section 12 in the main QA report** 
 [proposals from 6.8.5]
 ```
 
-**Timing:** The parallel agent MUST complete before Step 7 (report writing) starts. If it hasn't finished, wait for it — the report needs this section. Since it runs in parallel with testing (Steps 4-6), it should complete around the same time or earlier.
+**Timing:** The background agent MUST complete before Step 6 (report writing) starts. If it hasn't finished, wait for it — the report needs this section. Since it runs in background during Step 4 (testing), it should complete around the same time or earlier.
 
 ## Common Mistakes
 
@@ -1174,49 +1202,39 @@ Long silent periods make it impossible for the user to tell if work is happening
 
 Print these at the indicated moments. Keep each message to **one line**.
 
-**Step 1 (Analysis):**
-- `Analyzing PR #<N>... reading diff (<X> files changed)`
-- `Reading <filename> for full context...`
-- `Cross-feature impact: found <N> consumers of changed code`
-- `Analysis complete — <N> features affected, <N> UI pages to test`
+**Step 1 (Analyze) + Step 2 (Deploy) — run in parallel:**
+- `[Step 1+2] Spawning analysis + deploy agents in parallel...`
+- `[Step 1] Analyzing PR #<N>... reading diff (<X> files changed)`
+- `[Step 1] Cross-feature impact: found <N> consumers of changed code`
+- `[Step 2] Deploying branch <name> to staging...`
+- `[Step 2] Deploy verified — commit <hash> matches PR head`
 
-**Step 1.4 (Business Logic Validation):**
-- `Evaluating business logic: defining expected behavior for <feature>...`
-- `Business logic check: found <N> potential logic gaps (confidence: <high/medium/low>)`
-- `Asking user to confirm <N> medium-confidence findings...`
-- `Business logic validation complete — <N> correctness [BLV] test cases generated`
+**Step 3 (BLV + Test Cases) — BLV and standard TCs in parallel:**
+- `[Step 3] Running BLV + generating standard test cases in parallel...`
+- `[Step 3] BLV: found <N> potential logic gaps (confidence: <high/medium/low>)`
+- `[Step 3] Generated <N> test cases (<N> standard + <N> BLV)`
 
-**Step 2 (Deploy/Prep):**
-- `Deploying branch <name> to staging via SSH...`
-- `Clearing caches and running migrations...`
-- `Running composer install...` (if applicable)
-- `Deploy verified — commit <hash> matches PR head`
-- `Creating test infrastructure: <what> via Tinker...`
-
-**Step 3 (Browser):**
-- `Opening browser → navigating to <staging-url>...`
-- `Logging in as <role> (<email>)...`
-
-**Step 4 (Testing) — print for EVERY test case:**
+**Step 4 (Browser + Testing) — print for EVERY test case:**
+- `[Step 4] Opening browser → navigating to <staging-url>...`
+- `[Step 4] Logging in as <role> (<email>)...`
+- `[Step 4] Spawning UX agent in background...`
 - `[TC-<N>/<total>] <category>: <test case name>...`
 - `[TC-<N>/<total>] → PASS` or `[TC-<N>/<total>] → FAIL: <one-line reason>`
 - `Switching to <role> account for role-based tests...`
 - `Running server-side verification via Command Runner...`
 
-**Step 5 (Root Cause):**
+**Step 5 (Gap Eval + Pre-verdict):**
+- `[Step 5] Gap evaluation: found <N> missing test cases`
+- `[Step 5] Pre-verdict check: <N>/11 items verified`
 - `Bug found — tracing root cause in <file>...`
 
-**Step 6 (Evidence):**
-- `Capturing screenshot <N>/<total>: <description>...`
-- `Uploading to Cloudinary...` (if applicable)
-
-**Step 7 (Report):**
-- `Writing QA report... section <N>/13: <section name>`
-- `Report validation: checking <N> items...`
-
-**Step 8 (Cleanup):**
-- `Cleaning up test data: deleting <N> records...`
-- `Cleanup verified — all test records removed`
+**Steps 6+7+9 (Report + Cleanup + Upload) — run in parallel:**
+- `[Step 6+7+9] Starting report, cleanup, and screenshot upload in parallel...`
+- `[Step 9] Uploading <N> screenshots to Cloudinary...`
+- `[Step 7] Cleaning up test data: deleting <N> records...`
+- `[Step 6] Writing QA report... section <N>/13: <section name>`
+- `[Step 7] Cleanup verified — all test records removed`
+- `[Step 9] Screenshots uploaded — URLs inserted into report`
 
 ### Rules
 
