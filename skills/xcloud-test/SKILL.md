@@ -354,7 +354,7 @@ From the diff, identify:
 
 > Load `references/xcloud-feature-map.md` to identify which xCloud UI pages correspond to the PR's changed features. If the PR modifies a feature that has a management UI page, you must test via that page — not just CLI.
 
-The diff only shows what changed — it doesn't show you how the feature works as a whole. To understand the full picture, read the key source files directly from the local codebase. The PR code is already checked out locally, so use the Read tool, Grep, or Explore agents.
+The diff only shows what changed — it doesn't show you how the feature works as a whole. To understand the full picture, read the key source files directly from the worktree. The PR is checked out inside the worktree agent — use the Read tool, Grep, or Explore agents there. Never read PR source files from the main session directly.
 
 For each major file touched by the PR, read the **full file** (not just the diff hunk):
 - **Controllers** — read the entire controller to understand all actions, middleware, and how the changed method fits into the broader feature
