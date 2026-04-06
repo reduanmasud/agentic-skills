@@ -24,22 +24,25 @@ For each PR you test, you will check out the code locally and deploy it to the s
 At the very start of every QA session, **immediately create tasks** using `TaskCreate` so the user can see step-by-step progress. Create these tasks before doing anything else:
 
 ```
-TaskCreate: "Step 1/9: Analyze PR & read changed files"             ← parallel with Step 2
-TaskCreate: "Step 2/9: Deploy to staging"                           ← parallel with Step 1
-TaskCreate: "Step 3/9: Business logic validation + test case generation"  ← BLV + standard TCs in parallel
-TaskCreate: "Step 4/9: Browser setup & execute testing"             ← UX agent spawns in background here
-TaskCreate: "Step 5/9: Gap evaluation & pre-verdict check"          ← merged step
-TaskCreate: "Step 6/9: Write QA report"                             ← parallel with Step 7 + screenshot upload
-TaskCreate: "Step 7/9: Cleanup test data"                           ← parallel with Step 6
-TaskCreate: "Step 8/9: UX critique & competitive analysis"          ← background agent, starts during Step 4
-TaskCreate: "Step 9/9: Upload screenshots & finalize report"        ← parallel with Step 6
+TaskCreate: "Step 1/10: Analyze PR & read changed files"              ← foreground; Step 2 runs in background simultaneously
+TaskCreate: "Step 2/10: Deploy to staging"                            ← background sub-agent; starts with Step 1, must complete before Step 5
+TaskCreate: "Step 3/10: Clarification questions"                      ← after Step 1; runs while Step 2 still deploying
+TaskCreate: "Step 4/10: Business logic validation + test case generation"  ← after Step 3; runs while Step 2 still deploying
+TaskCreate: "Step 5/10: Browser setup & execute testing"              ← GATE: Steps 2 AND 4 must both complete first
+TaskCreate: "Step 6/10: Gap evaluation & pre-verdict check"           ← after Step 5
+TaskCreate: "Step 7/10: Write QA report"                              ← parallel with Steps 8 + 10
+TaskCreate: "Step 8/10: Cleanup test data"                            ← parallel with Step 7
+TaskCreate: "Step 9/10: UX critique & competitive analysis"           ← background agent, starts during Step 5
+TaskCreate: "Step 10/10: Upload screenshots & finalize report"        ← parallel with Step 7
 ```
 
 **Parallelism rules (automatic — never ask the user):**
-- **Steps 1+2 ALWAYS run in parallel** — spawn analysis agent (worktree) + deploy agent in one message
-- **Step 3: BLV + standard test cases run in parallel** — standard TCs (Steps A-E) don't need BLV output; only Step F (correctness TCs) waits for BLV
-- **Step 8 (UX) runs in background** — spawn after first screenshots in Step 4, completes before Step 6
-- **Steps 6+7+9 run in parallel** — report writing, cleanup, and screenshot upload are independent
+- **Step 2 (Deploy) is a background sub-agent** — spawn it at the same time as Step 1, but it runs in the background and does NOT block Steps 1, 3, or 4
+- **Steps 1 → 3 → 4 are sequential in the foreground** — each waits for the previous; all three run while deployment is in progress
+- **Step 5 is double-gated** — do NOT start browser testing until BOTH Step 4 (test cases ready) AND Step 2 (deployment confirmed) are complete. Check deploy sub-agent result before spawning test sub-agents.
+- **Step 4: BLV + standard test cases run in parallel** — standard TCs (Steps A-E) don't need BLV output; only Step F (correctness TCs) waits for BLV
+- **Step 9 (UX) runs in background** — spawn after first screenshots in Step 5, completes before Step 7
+- **Steps 7+8+10 run in parallel** — report writing, cleanup, and screenshot upload are independent
 - Mark each task `in_progress` when you start it, `completed` when done
 - For multi-PR parallel mode, create a top-level task per PR (e.g., "PR #1234: Testing") with subtasks
 - These indicators are the user's primary way to track progress — never skip them
@@ -47,14 +50,14 @@ TaskCreate: "Step 9/9: Upload screenshots & finalize report"        ← parallel
 ### Parallelism Flow (Single PR)
 
 ```
-Step 1 (Analyze) ──┐
-                   ├─ both complete ─→ Step 3 (BLV + Standard TCs in parallel) ─→ Step 4 (Testing + UX background)
-Step 2 (Deploy) ───┘                                                                      │
-                                                                              Step 5 (Gap eval + Pre-verdict)
-                                                                                          │
-                                                                    ┌─────────────────────┼─────────────────────┐
-                                                              Step 6 (Report)      Step 7 (Cleanup)      Step 9 (Upload)
-                                                                    └─────────────────────┴─────────────────────┘
+Step 1 (Analyze) ──→ Step 3 (Clarification) ──→ Step 4 (BLV + TCs) ──┐
+                                                                         ├─ GATE: both done ──→ Step 5 (Testing + Step 9 UX background)
+Step 2 (Deploy — background sub-agent) ──────────────────────────────────┘                              │
+                                                                                         Step 6 (Gap eval + Pre-verdict)
+                                                                                                         │
+                                                                       ┌─────────────────────────────────┼──────────────────────┐
+                                                                 Step 7 (Report)               Step 8 (Cleanup)       Step 10 (Upload)
+                                                                       └─────────────────────────────────┴──────────────────────┘
 ```
 
 ## Step 0: PR Intake & Mode Selection
@@ -541,7 +544,134 @@ After analyzing the PR (Step 1), check what server stacks and site types the PR 
 
 **NEVER skip tests because staging lacks the right server stack or site type.** Create the required records via Tinker. A Tinker record takes 30 seconds. A skipped test can miss a production bug. Track every record — you must clean them up in Step 8.
 
-## Step 3: Browser Setup
+## Step 3: Pre-Testing Clarification (MANDATORY)
+
+After Step 1 (analysis) completes — while the deploy sub-agent is still running in the background — review the analysis findings and ask the user targeted questions **before** generating any test cases.
+
+### Why This Step Exists
+
+Test cases are only as good as the spec they test against. Without clarification:
+- You might test a Nginx-specific fix on OLS and call it FAIL when OLS was never in scope
+- You might miss that what looks like a single-stack change is actually expected everywhere
+- You might test the wrong user roles or skip a billing guard that should exist
+
+Step 3 resolves these ambiguities so that Step 4 (test case generation) produces the right cases the first time.
+
+### What to Look For (Derive From Step 1 Analysis)
+
+After analysis, scan your findings across these five categories. **Only ask about actual ambiguities you found** — do not ask generic questions if the analysis already makes the scope clear.
+
+---
+
+#### Category A — Stack Scope
+
+Look at which stacks the changed code touches. Ask if any of these are true:
+
+| Situation found in analysis | Question to ask |
+|---|---|
+| Code is in a stack-specific file (`Nginx/`, `OpenLiteSpeed/`, `Docker/`) but calls a **shared service** | "This fix is in the Nginx-specific layer but `[SharedService]` is called by all stacks. Should OLS/Docker get the same fix, or is Nginx-only intentional?" |
+| Code is in a **shared service** but the PR description says it targets one stack | "The fix is in `[SharedService]` which runs on all stacks. Is it intentional that OLS and Docker also get this change, or should it be guarded?" |
+| A feature exists on one stack but **similar code paths exist on other stacks** | "This fix is for Nginx. The same operation exists for OLS (`lsphp_path`). Should OLS get an equivalent fix, or is OLS's current behavior correct?" |
+| PR says "fixed for Nginx" but the fix is in **common code** with no stack guard | "The fix has no stack guard — it will apply to all stacks. Is that the intent, or should it only apply to Nginx?" |
+
+---
+
+#### Category B — Site Type Scope
+
+Look at which site types the changed code affects. Ask if any of these are true:
+
+| Situation | Question to ask |
+|---|---|
+| Code is in a WordPress-specific path but runs for all site types | "This code path runs for all site types, not just WordPress. Should it apply to PHP/static/Node sites too?" |
+| A site type is **explicitly excluded** in code but PR description doesn't mention the exclusion | "Static sites are excluded in this code. Is that intentional?" |
+| Feature works differently on different site types with no documentation | "This behaves differently for WordPress vs PHP sites. Is that expected?" |
+
+---
+
+#### Category C — Feature Guards and Access
+
+Look at billing guards, permission checks, and role-gating. Ask if any of these are true:
+
+| Situation | Question to ask |
+|---|---|
+| UI element visible to all users but **no backend plan check** | "The button is visible to free users but there's no plan guard on the backend. Should free users be able to use this, or is a guard missing?" |
+| A new permission was added — **who should have it?** | "A new `[permission]` check was added. Should team members (non-owners) have this permission, or only the server owner?" |
+| Feature existed before but scope **changed with this PR** | "Previously this was available to all plans. Does this PR intentionally restrict/expand it?" |
+
+---
+
+#### Category D — Expected Behavior in Edge Cases
+
+Look for operations that can fail or have non-obvious outcomes. Ask about:
+
+| Situation | Question to ask |
+|---|---|
+| Long-running server operation (install, config write, restart) | "What should happen if `[operation]` fails mid-way — should it roll back, leave partial state, or show an error and let the user retry?" |
+| Operation that modifies **existing data** with a migration | "If a server already has `[config]` set, should this migration overwrite it or preserve the existing value?" |
+| An operation that **could be run twice** (idempotency unclear) | "Is it safe to run this operation twice on the same server, or should it check if it's already been applied?" |
+
+---
+
+#### Category E — Developer Concerns (always ask these two)
+
+Always include these at the end of your questions, regardless of what else you ask:
+
+1. **"Is there anything specific about this PR you're worried about breaking?"**
+2. **"Are there any edge cases you already know about that I should make sure to test?"**
+
+These two questions consistently surface the highest-value test cases, because the developer knows things the code analysis cannot reveal.
+
+---
+
+### How to Present Questions
+
+Present ALL questions in ONE message, grouped by category. Never ask one question, wait for an answer, then ask another.
+
+```markdown
+## Step 3: Pre-Testing Questions for PR #<N>
+
+I've analyzed the PR and have a few questions before generating test cases.
+**Answer what you can — I'll make reasonable assumptions for anything skipped.**
+
+**Stack Scope:**
+1. [Question derived from Category A findings]
+2. [Question derived from Category A findings — if multiple]
+
+**Feature Access:**
+3. [Question derived from Category C findings]
+
+**Expected Behavior:**
+4. [Question derived from Category D findings]
+
+**Developer Insights (always ask):**
+5. Is there anything specific about this PR you're worried about breaking?
+6. Any edge cases you already know about that I should make sure to test?
+```
+
+**Rules:**
+- **1 message, all questions** — never drip-feed questions one at a time
+- **Minimum 2 questions** (the two developer insight questions from Category E are always included)
+- **Maximum 7 questions** — if you have more than 7 ambiguities, prioritize the highest-consequence ones
+- **Every question must trace to a specific finding** from Step 1 — no generic filler
+- **Wait for user response** before starting Step 4 (test case generation)
+- **If the user skips a question**, document your assumption in the test case list: `[Assumed: OLS not in scope — user did not clarify]`
+- **If deployment finishes while waiting**, note it: `[Deploy complete — ready to start testing once you answer above]`
+
+### Using Answers in Step 4
+
+After the user responds, update your understanding:
+
+| Answer type | Action |
+|---|---|
+| "Yes, OLS should also be tested" | Add OLS-specific test cases to the matrix; create OLS server in Step 2 infra audit if not present |
+| "No, this is Nginx-only" | Remove OLS/Docker test cases from matrix; mark as "out of scope per developer" in report |
+| "Free users should NOT have access" | Add BLV test cases verifying the backend guard; escalate as a bug if missing |
+| "Roll back on failure" | Add error-path test cases verifying rollback; verify via Tinker after a simulated failure |
+| Developer names a specific edge case | Add it as a named test case: `TC-N: [edge case described by developer]` |
+
+---
+
+## Step 4: Browser Setup
 
 > **CRITICAL — Context Overflow Prevention:**
 > Do NOT open the browser or call any `browser_*` tools in the main session. Every `browser_snapshot` dumps the full page accessibility tree into the main context (~10–50 KB per call). With 50+ test cases × 3–5 snapshots each, this exhausts the context window by TC-15 and causes the session to silently stop mid-test.
@@ -1360,17 +1490,25 @@ Long silent periods make it impossible for the user to tell if work is happening
 
 Print these at the indicated moments. Keep each message to **one line**.
 
-**Step 1 (Analyze) + Step 2 (Deploy) — run in parallel:**
-- `[Step 1+2] Spawning analysis + deploy agents in parallel...`
+**Step 1 (Analyze) + Step 2 (Deploy background sub-agent) — spawn simultaneously:**
+- `[Step 1+2] Spawning analysis agent (foreground) + deploy sub-agent (background)...`
 - `[Step 1] Analyzing PR #<N>... reading diff (<X> files changed)`
 - `[Step 1] Cross-feature impact: found <N> consumers of changed code`
-- `[Step 2] Deploying branch <name> to staging...`
-- `[Step 2] Deploy verified — commit <hash> matches PR head`
+- `[Step 2] Deploy sub-agent running in background — proceeding with Steps 3+4 in parallel`
+- `[Step 2] Deploy complete — branch <name>, commit <hash>` *(printed when sub-agent returns)*
 
-**Step 3 (BLV + Test Cases) — BLV and standard TCs in parallel:**
-- `[Step 3] Running BLV + generating standard test cases in parallel...`
-- `[Step 3] BLV: found <N> potential logic gaps (confidence: <high/medium/low>)`
-- `[Step 3] Generated <N> test cases (<N> standard + <N> BLV)`
+**Step 3 (Clarification Questions) — after Step 1, while deploy runs:**
+- `[Step 3] Analysis complete. Preparing clarification questions...`
+- `[Step 3] Found <N> scope/behavior ambiguities — asking user now`
+- `[Step 3] Waiting for user response...`
+- `[Step 3] Answers received — updating test scope` *(after user responds)*
+
+**Step 4 (BLV + Test Cases) — after Step 3 answers, while deploy may still run:**
+- `[Step 4] Running BLV + generating standard test cases in parallel...`
+- `[Step 4] BLV: found <N> potential logic gaps (confidence: <high/medium/low>)`
+- `[Step 4] Generated <N> test cases (<N> standard + <N> BLV)`
+- `[Step 4] Checking deploy status before starting browser testing...`
+- `[Step 5 GATE] Deploy confirmed ✓ + test cases ready ✓ — spawning test sub-agents`
 
 **Step 4 (Browser + Testing) — sub-agent dispatch (main session prints these):**
 - `[Step 4] Writing checkpoint to qa-test-progress.json...`
@@ -1390,9 +1528,9 @@ Print these at the indicated moments. Keep each message to **one line**.
 - `[Batch <B>] Running server-side verification via Command Runner...`
 - `[Batch <B>] Closing browser...`
 
-**Step 5 (Gap Eval + Pre-verdict):**
-- `[Step 5] Gap evaluation: found <N> missing test cases`
-- `[Step 5] Pre-verdict check: <N>/11 items verified`
+**Step 6 (Gap Eval + Pre-verdict):**
+- `[Step 6] Gap evaluation: found <N> missing test cases`
+- `[Step 6] Pre-verdict check: <N>/11 items verified`
 - `Bug found — tracing root cause in <file>...`
 
 **Steps 6+7+9 (Report + Cleanup + Upload) — run in parallel:**
