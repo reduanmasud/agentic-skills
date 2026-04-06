@@ -101,7 +101,7 @@ This produces **three execution paths:**
 When parallel mode is chosen, spawn **one analysis Agent per PR** using git worktree isolation. All agents run concurrently in a single message.
 
 Each analysis agent:
-1. `gh pr checkout <PR_NUMBER>` (in its isolated worktree)
+1. Fetch PR code safely (no local branch, no shared ref modification) — see template below
 2. `gh pr diff <PR_NUMBER> --name-only` → list changed files
 3. Read changed files, cross-reference with `references/xcloud-feature-map.md`
 4. Identify: affected features, UI pages, server-side operations, testing categories
@@ -115,7 +115,8 @@ Agent(
   isolation="worktree",
   prompt="You are analyzing PR #1234 for the xcloud-test QA workflow.
 
-  1. Run: gh pr checkout 1234
+  1. Fetch PR code into this worktree (safe — no local branch, detached HEAD only):
+     git fetch origin 'refs/pull/1234/head' && git checkout FETCH_HEAD
   2. Run: gh pr diff 1234 --name-only
   3. Read the changed files to understand what the PR does
   4. Cross-reference with the xCloud feature map to identify affected UI pages
@@ -261,7 +262,8 @@ Agent(
   description="Analyze PR #<N>",
   isolation="worktree",
   prompt="Analyze PR #<N> for xcloud-test QA.
-  1. gh pr checkout <N>
+  1. Fetch PR code into this worktree (safe — detached HEAD, no local branch):
+     git fetch origin 'refs/pull/<N>/head' && git checkout FETCH_HEAD
   2. gh pr diff <N> --name-only
   3. Read changed files, identify affected features/UI pages
   4. Cross-reference with xCloud feature map
@@ -302,14 +304,15 @@ Both agents run concurrently. When both complete:
 
 > **If pipelined analysis was used:** skip Step 1 entirely — the analysis results are already available. Proceed to Step 3 (Browser Setup) since deployment is also done.
 >
-> **If you skipped the pipelined path:** spawn a worktree analysis agent first (template below), then use its output for Steps 1.1–1.4. Do NOT read PR files directly from the main session — `gh pr checkout` in the main session switches your active branch.
+> **If you skipped the pipelined path:** spawn a worktree analysis agent first (template below), then use its output for Steps 1.1–1.4. Do NOT read PR files directly from the main session — running any git checkout in the main session switches your active branch and breaks working state.
 >
 > ```
 > Agent(
 >   description="Analyze PR #<N>",
 >   isolation="worktree",
 >   prompt="Analyze PR #<N> for xcloud-test QA.
->   1. gh pr checkout <N>
+>   1. Fetch PR code into this worktree (safe — detached HEAD, no local branch created):
+>      git fetch origin 'refs/pull/<N>/head' && git checkout FETCH_HEAD
 >   2. gh pr view <N> — read PR title, description, and linked issues for the "why"
 >   3. gh pr diff <N> --name-only — list changed files
 >   4. gh pr diff <N> --name-only | grep -i migration — flag migration files
@@ -625,27 +628,25 @@ These two questions consistently surface the highest-value test cases, because t
 
 ### How to Present Questions
 
-Present ALL questions in ONE message, grouped by category. Never ask one question, wait for an answer, then ask another.
+Present ALL questions in ONE message. Never ask one question, wait for an answer, then ask another. Write in a direct conversational tone — no markdown headers, no formal structure. Just numbered questions grouped loosely by theme.
 
-```markdown
-## Step 3: Pre-Testing Questions for PR #<N>
+```
+I've analyzed PR #<N>. Before generating test cases, a few questions:
 
-I've analyzed the PR and have a few questions before generating test cases.
-**Answer what you can — I'll make reasonable assumptions for anything skipped.**
+[Stack scope question if applicable:]
+1. The fix is in [file] which runs on all stacks. Should OLS and Docker also get this change, or is Nginx-only intentional?
 
-**Stack Scope:**
-1. [Question derived from Category A findings]
-2. [Question derived from Category A findings — if multiple]
+[Feature access question if applicable:]
+2. The button is visible to free users but I don't see a backend plan guard. Should free users be blocked, or is this intentional?
 
-**Feature Access:**
-3. [Question derived from Category C findings]
+[Edge case question if applicable:]
+3. What should happen if [operation] fails mid-way — roll back, leave partial state, or show an error for retry?
 
-**Expected Behavior:**
-4. [Question derived from Category D findings]
+Always include these two at the end:
+4. Anything specific about this PR you're worried about breaking?
+5. Any edge cases you already know about that I should make sure to test?
 
-**Developer Insights (always ask):**
-5. Is there anything specific about this PR you're worried about breaking?
-6. Any edge cases you already know about that I should make sure to test?
+Answer what you can — I'll use reasonable defaults for anything skipped.
 ```
 
 **Rules:**
@@ -1590,4 +1591,4 @@ These principles guide every QA session. The specific procedures are in the step
 - **End-to-end, not surface-level** — "it appears in the UI" is not verification. Perform the action and check UI + API + server state + database
 - **Logic correctness, not just code correctness** — "the code does what it says" is not enough. Ask: "does the code do what it SHOULD do?" A feature that misleads users is broken even if the code runs cleanly.
 - **Cross-reference previous QA reports** — if a prior report exists for related features, check for known issues before starting
-- **PR source code is accessed via worktree agents only** — never run `gh pr checkout` in the main session. Direct checkout switches the active branch and breaks working state regardless of which directory Claude Code is running from. All PR file reading happens inside an `isolation="worktree"` agent.
+- **PR source code is accessed via worktree agents only** — never run `gh pr checkout` or any git checkout in the main session. Even inside an `isolation="worktree"` agent, avoid `gh pr checkout` — it modifies the shared `.git` directory (tracking refs, config) which can affect the main session's working state. Instead, use `git fetch origin 'refs/pull/<N>/head' && git checkout FETCH_HEAD` inside the worktree agent (detached HEAD, no shared ref modification).
