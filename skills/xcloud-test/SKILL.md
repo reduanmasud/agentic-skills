@@ -543,14 +543,19 @@ After analyzing the PR (Step 1), check what server stacks and site types the PR 
 
 ## Step 3: Browser Setup
 
-### Playwright MCP Priority
+> **CRITICAL — Context Overflow Prevention:**
+> Do NOT open the browser or call any `browser_*` tools in the main session. Every `browser_snapshot` dumps the full page accessibility tree into the main context (~10–50 KB per call). With 50+ test cases × 3–5 snapshots each, this exhausts the context window by TC-15 and causes the session to silently stop mid-test.
+>
+> **Browser testing runs entirely inside sub-agents.** The main session only sees result summaries. Browser setup instructions in this section are reference material for what those sub-agents must do — not instructions for the main session itself.
 
-Two Playwright MCP servers may be available. Try them in this order:
+### Playwright MCP Priority (for testing sub-agents)
+
+Two Playwright MCP servers may be available inside each sub-agent. Try them in this order:
 
 1. **Plugin version** (preferred): `mcp__plugin_playwright_playwright__browser_*`
 2. **Standalone Playwright** (fallback): `mcp__playwright__browser_*`
 
-At the start of Step 3, attempt `browser_navigate` with the plugin prefix. If it fails (tool not found, connection error), switch to the standalone prefix for all subsequent browser calls. Print which version you're using:
+At the start of each testing sub-agent, attempt `browser_navigate` with the plugin prefix. If it fails (tool not found, connection error), switch to the standalone prefix for all subsequent browser calls. Print which version is being used:
 - `Using Playwright MCP (plugin version)`
 - `Plugin Playwright unavailable — falling back to standalone Playwright`
 
@@ -671,6 +676,122 @@ After generating test cases, build a **traceability matrix** that maps every cha
 - If a file genuinely cannot be tested (e.g., a config change with no observable effect), document why in the matrix's Coverage column — but this should be rare
 
 **After testing:** Update the matrix with actual results. Any file that still shows 0 executed tests is a gap that must be addressed before the report is finalized.
+
+### 4.1 Sub-Agent Test Execution (MANDATORY — do not skip)
+
+After generating the test case list and traceability matrix, **do not execute any browser tests in the main session**. Instead, follow this dispatch flow:
+
+#### Step 1 — Write the checkpoint file
+
+Before spawning any sub-agents, write the full test plan to `qa-test-progress.json`:
+
+```bash
+# Write checkpoint — if the session stops, this file lets you resume
+cat > qa-test-progress.json << 'EOF'
+{
+  "pr": <PR_NUMBER>,
+  "total_tests": <TOTAL>,
+  "batches": [
+    {"batch": 1, "tests": ["TC-1", "TC-2", ..., "TC-15"], "status": "pending"},
+    {"batch": 2, "tests": ["TC-16", ..., "TC-30"], "status": "pending"}
+  ],
+  "completed_tests": [],
+  "bugs_found": [],
+  "escalations": []
+}
+EOF
+```
+
+#### Step 2 — Split test cases into batches of 15
+
+Group the numbered test case list into sequential batches of 15. Each batch becomes one sub-agent invocation. For 50 test cases: Batch 1 = TC-1–15, Batch 2 = TC-16–30, Batch 3 = TC-31–45, Batch 4 = TC-46–50.
+
+**Batches run sequentially** (not in parallel) — each sub-agent opens a fresh browser, logs in, runs its batch, then closes the browser. This prevents session state leakage between batches and keeps each sub-agent's context small.
+
+#### Step 3 — Spawn testing sub-agents one batch at a time
+
+For each batch, spawn a testing sub-agent using this template:
+
+```
+Agent(
+  description="Run browser tests for PR #<N> — Batch <B> (TC-<start> to TC-<end>)",
+  prompt="You are a QA browser testing agent for xcloud-test. Execute a batch of UI test cases on staging.
+
+  **PR:** #<N>
+  **Staging URL:** <url>
+  **Paid test account:** <email> / <password>
+  **Free test account:** <email> / <password>
+  **Screenshots dir:** qa-screenshots/
+  **Cloudinary available:** <yes/no>
+
+  **Test cases to execute (this batch only):**
+  [paste the numbered test case list for this batch, including expected results]
+
+  **Playwright prefix:** Try mcp__plugin_playwright_playwright__ first, fall back to mcp__playwright__ if unavailable.
+
+  **Instructions:**
+  1. Load references/playwright-mcp-guide.md for browser patterns and auth flow
+  2. Open browser, navigate to staging URL, log in as the appropriate user for each test case
+  3. For each test case: perform the browser interaction → screenshot evidence → check console errors
+  4. Follow the Navigate → Snapshot → Interact → Snapshot → Screenshot cycle strictly
+  5. For server-side verification test cases: use Command Runner via xCloud UI (Server > Management > Commands)
+  6. For Tinker-based verification: use SSH to staging server (credentials below if needed)
+  7. If you encounter a test case requiring user action (Option 2 escalation): note it and continue with the next test case — do NOT pause and wait
+  8. Close browser at end of batch with browser_close
+
+  **SSH (for Tinker/server-side checks):**
+  <ssh-connection-string>
+  App path: <app-path>
+
+  **Return (structured output required):**
+  - Results table: TC-N | PASS/FAIL | Evidence (screenshot file or command output) | Notes
+  - Bugs found: TC-N | Description | Root cause hint | Screenshot file
+  - Escalations needed: TC-N | Why it needs user action | Exact steps for user
+  - Screenshots taken: list of files saved to qa-screenshots/
+  - Console errors encountered (non-pre-existing)"
+)
+```
+
+#### Step 4 — After each batch completes
+
+1. **Print results** — display the sub-agent's results table so the user sees progress
+2. **Update checkpoint file** — mark the batch as `"status": "completed"`, append test results and bugs
+3. **Handle escalations** — if the sub-agent flagged any Option 2 items, present them to the user now (batched, not one at a time)
+4. **Spawn next batch** — only after the current batch is done and any escalations are resolved
+
+```bash
+# After each batch, update the checkpoint
+# (read, update, write back)
+python3 -c "
+import json, sys
+data = json.load(open('qa-test-progress.json'))
+data['batches'][<B-1>]['status'] = 'completed'
+data['completed_tests'].extend([...])
+json.dump(data, open('qa-test-progress.json', 'w'), indent=2)
+"
+```
+
+#### Step 5 — After all batches complete
+
+Print a consolidated summary before proceeding to gap evaluation:
+```
+[Step 4] All batches complete.
+Total: <N> tests executed — <N> PASS, <N> FAIL
+Bugs found: <N>
+Screenshots: <N> files in qa-screenshots/
+```
+
+Then proceed to Step 4.18 (Gap Evaluation) and Step 5 (Pre-Verdict Check).
+
+#### If the session stops mid-testing (resume procedure)
+
+If the session stops before all batches are done, resume by reading the checkpoint:
+
+```bash
+cat qa-test-progress.json  # shows completed/pending batches
+```
+
+Tell Claude: "Resume from qa-test-progress.json — batches N through M are already done." Claude will spawn sub-agents only for the pending batches.
 
 ### Testing Priority
 
@@ -931,15 +1052,33 @@ echo "CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY:-(not set)}"
 echo "CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET:-(not set)}"
 ```
 
-- **If all 3 are set:** Capture screenshots locally to `qa-screenshots/`, then **batch upload after all screenshots are captured** (Step 9) using the skill's Python script:
+- **If all 3 are set:** Capture screenshots locally to `qa-screenshots/`, then **batch upload after all screenshots are captured** (Step 9) by running the skill's upload script — one command, no loops:
   ```bash
   python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py --dir qa-screenshots --pr <PR_NUMBER>
   ```
-  The script prints each URL and a ready-to-paste markdown table. Use the returned Cloudinary URLs in the report, **not** local paths.
+  The script handles every file in the directory, prints each URL, and outputs a ready-to-paste markdown table. Use the returned Cloudinary URLs in the report, **not** local paths.
 
 - **If any var is missing:** Fall back to local paths in the report: `![alt text](qa-screenshots/XX-description.png)`
 
-**Never attempt manual curl uploads or custom upload code** — always use the script above.
+> **MANDATORY — Upload via script only:**
+> The upload script at `~/.claude/skills/xcloud-test/scripts/upload_screenshots.py` is the ONLY permitted upload method.
+> - **NEVER** write a for loop to iterate over screenshot files
+> - **NEVER** use curl, wget, or requests to upload files manually
+> - **NEVER** write custom Python/Bash upload code of any kind
+> - **NEVER** upload files one at a time with separate Bash commands
+>
+> **Wrong:**
+> ```bash
+> # ❌ Do NOT do this
+> for f in qa-screenshots/*.png; do
+>   curl -X POST "https://api.cloudinary.com/..." -F "file=@$f"
+> done
+> ```
+> **Right:**
+> ```bash
+> # ✅ Always do this — one command
+> python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py --dir qa-screenshots --pr <PR_NUMBER>
+> ```
 
 ### Evidence to Collect
 - **Screenshots** saved to `qa-screenshots/` then uploaded to Cloudinary (if available) — scroll to the specific element that shows the bug or fix before capturing. Before/after screenshots must be visually distinct. Capture toasts/notifications immediately before they auto-dismiss.
@@ -1186,6 +1325,8 @@ The parallel agent's output is **included as Section 12 in the main QA report** 
 
 | Mistake | Why It's Wrong | Fix |
 |---------|---------------|-----|
+| **Running browser tests in the main session** | Each `browser_snapshot` dumps ~10–50 KB of accessibility tree into the main context. By TC-15 the context is full and the session silently stops. | Browser testing MUST run inside testing sub-agents (Section 4.1). Main session only sees result summaries. |
+| **Writing a for loop to upload screenshots** | Claude may write `for f in qa-screenshots/*.png; do curl ...` or a Python loop thinking it's "custom code". This is explicitly forbidden. | Run ONE command: `python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py --dir qa-screenshots --pr <N>` — no loops, no curl, no custom code of any kind. |
 | **Reporting PASS without evidence** | "Login works" with no screenshot is not a test result | Every PASS needs a screenshot, command output, or Tinker result |
 | **Reading code instead of testing** | "The controller checks permissions" is code review, not QA | Actually log in as the wrong user and try to access the resource |
 | **Testing only happy path** | Missing negative tests, edge cases, and role variations | Generate test cases for error paths, boundary values, and unauthorized access |
@@ -1231,14 +1372,23 @@ Print these at the indicated moments. Keep each message to **one line**.
 - `[Step 3] BLV: found <N> potential logic gaps (confidence: <high/medium/low>)`
 - `[Step 3] Generated <N> test cases (<N> standard + <N> BLV)`
 
-**Step 4 (Browser + Testing) — print for EVERY test case:**
-- `[Step 4] Opening browser → navigating to <staging-url>...`
-- `[Step 4] Logging in as <role> (<email>)...`
+**Step 4 (Browser + Testing) — sub-agent dispatch (main session prints these):**
+- `[Step 4] Writing checkpoint to qa-test-progress.json...`
+- `[Step 4] <N> test cases split into <M> batches of 15`
 - `[Step 4] Spawning UX agent in background...`
-- `[TC-<N>/<total>] <category>: <test case name>...`
-- `[TC-<N>/<total>] → PASS` or `[TC-<N>/<total>] → FAIL: <one-line reason>`
-- `Switching to <role> account for role-based tests...`
-- `Running server-side verification via Command Runner...`
+- `[Step 4] Spawning Batch <B>/<M>: TC-<start> to TC-<end>...`
+- `[Step 4] Batch <B> complete: <N> PASS, <N> FAIL — <N> bugs found`
+- `[Step 4] Batch <B> escalation: TC-<N> needs user action — <description>`
+- `[Step 4] All batches complete: <N>/<total> tests done`
+
+**Inside each testing sub-agent (sub-agent prints these):**
+- `[Batch <B>] Opening browser → <staging-url>...`
+- `[Batch <B>] Logging in as <role> (<email>)...`
+- `[TC-<N>/<batch-total>] <category>: <test case name>...`
+- `[TC-<N>/<batch-total>] → PASS` or `[TC-<N>/<batch-total>] → FAIL: <one-line reason>`
+- `[Batch <B>] Switching to <role> account for role-based tests...`
+- `[Batch <B>] Running server-side verification via Command Runner...`
+- `[Batch <B>] Closing browser...`
 
 **Step 5 (Gap Eval + Pre-verdict):**
 - `[Step 5] Gap evaluation: found <N> missing test cases`

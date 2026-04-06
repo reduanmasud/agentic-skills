@@ -149,7 +149,7 @@ Use **Option A** when you need to verify logout works or want to test session cl
 
 ## Screenshot Management
 
-### Cloudinary Upload (Preferred When Available)
+### Cloudinary Upload (When Available)
 
 **Before taking any screenshots**, check if all 3 Cloudinary env vars are set:
 
@@ -164,12 +164,20 @@ If ALL three — `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_
 
 If any of the 3 vars is missing, fall back to local paths: `![alt](qa-screenshots/XX-description.png)`
 
-**Batch upload (preferred — run once after all screenshots are captured):**
+**Upload command — run ONCE after all screenshots are captured:**
 ```bash
 python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py --dir qa-screenshots --pr <PR_NUMBER>
 ```
 
-This uploads all screenshots in the directory, prints progress, and outputs a ready-to-paste markdown table for the report. Use `--json` flag for JSON output only.
+This is the **only permitted upload method**. The script handles all files in the directory in one pass.
+
+> **NEVER** write a for loop, use curl, or write any custom upload code.
+> The script at `~/.claude/skills/xcloud-test/scripts/upload_screenshots.py` handles everything.
+
+Use `--json` flag if you only need the URL mapping as JSON:
+```bash
+python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py --dir qa-screenshots --pr <PR_NUMBER> --json
+```
 
 **In the report, use the Cloudinary URL:**
 ```markdown
