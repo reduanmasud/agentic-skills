@@ -60,6 +60,45 @@ Step 2 (Deploy — background sub-agent) ─────────────
                                                                        └─────────────────────────────────┴──────────────────────┘
 ```
 
+---
+
+## CONTEXT BUDGET RULES (READ FIRST — ENFORCED THROUGHOUT)
+
+A full QA session runs 1–3 hours and generates enough data to silently overflow the context window. When that happens, the agent forgets what it was testing mid-session. These rules prevent that.
+
+### What MUST go to disk, never stay in context
+
+| Data | Where to write | When |
+|------|---------------|------|
+| Full test case list + traceability matrix | `qa-test-progress.json` | Before spawning any batch agent |
+| All batch results (full detail) | `qa-test-progress.json` | After each batch completes |
+| All bugs found (full detail) | `qa-test-progress.json` | After each batch completes |
+| Analysis summary | `qa-test-progress.json` → `.analysis` key | After Step 1 |
+| Environment info | `qa-test-progress.json` → `.env` key | At session start |
+
+**Rule:** If data exceeds 3 sentences, it goes to `qa-test-progress.json`. The main session only holds summaries.
+
+### Sub-agent return size cap
+
+Every sub-agent (analysis, deploy, testing batch, UX) MUST return ≤ 400 words to the main session. Full details go into `qa-test-progress.json` or the report file. The main session only needs to know: status, counts, filenames, and blockers.
+
+### Reference files load inside sub-agents only
+
+`testing-categories.md`, `server-verification.md`, `playwright-mcp-guide.md`, `xcloud-feature-map.md`, `report-template.md`, `environment-setup.md`, `security-testing.md` — load these **inside the sub-agents that need them**, not in the main session.
+
+The main session never loads reference files.
+
+### Session split point (MANDATORY for large PRs)
+
+After **all test batches complete** and before gap evaluation:
+1. Run `/save-session` to persist the session state
+2. Print: `[CHECKPOINT] All batches done. qa-test-progress.json has full results. Safe to continue or resume.`
+3. Continue with gap evaluation in the same session if context is not near limit
+
+If the session is interrupted, resume by: reading `qa-test-progress.json` and picking up from the first incomplete batch.
+
+---
+
 ## Step 0: PR Intake & Mode Selection
 
 ### 0.1 Parse Input
@@ -814,24 +853,48 @@ After generating the test case list and traceability matrix, **do not execute an
 
 #### Step 1 — Write the checkpoint file
 
-Before spawning any sub-agents, write the full test plan to `qa-test-progress.json`:
+Before spawning any sub-agents, write the **complete** test plan and environment info to `qa-test-progress.json`. This file is the single source of truth for resuming — it must contain everything needed to restart from any batch.
 
 ```bash
-# Write checkpoint — if the session stops, this file lets you resume
+# Write checkpoint — complete state dump for resume
 cat > qa-test-progress.json << 'EOF'
 {
   "pr": <PR_NUMBER>,
+  "pr_title": "<PR title>",
+  "session_started": "<ISO timestamp>",
+  "env": {
+    "staging_url": "<url>",
+    "ssh": "<user@host>",
+    "app_path": "<path>",
+    "paid_account": {"email": "<email>", "password": "<password>"},
+    "free_account": {"email": "<email>", "password": "<password>"}
+  },
+  "analysis": {
+    "changed_files": ["<file1>", "<file2>"],
+    "affected_features": ["<feature1>"],
+    "pr_summary": "<what/why/how in 2-3 sentences>",
+    "blv_gaps": []
+  },
+  "test_cases": [
+    {"id": "TC-1", "name": "<name>", "role": "paid", "category": "smoke", "expected": "<expected result>"}
+  ],
+  "traceability": [
+    {"file": "<file>", "test_cases": ["TC-1", "TC-2"]}
+  ],
   "total_tests": <TOTAL>,
   "batches": [
-    {"batch": 1, "tests": ["TC-1", "TC-2", ..., "TC-15"], "status": "pending"},
-    {"batch": 2, "tests": ["TC-16", ..., "TC-30"], "status": "pending"}
+    {"batch": 1, "tests": ["TC-1", ..., "TC-15"], "status": "pending", "results": []},
+    {"batch": 2, "tests": ["TC-16", ..., "TC-30"], "status": "pending", "results": []}
   ],
-  "completed_tests": [],
   "bugs_found": [],
-  "escalations": []
+  "escalations": [],
+  "screenshots": [],
+  "summary": {"pass": 0, "fail": 0, "skipped": 0}
 }
 EOF
 ```
+
+**This write happens ONCE before any batch runs. All subsequent writes are updates (read → modify → write back). Never regenerate this file from scratch.**
 
 #### Step 2 — Split test cases into batches of 15
 
@@ -874,43 +937,66 @@ Agent(
   <ssh-connection-string>
   App path: <app-path>
 
-  **Return (structured output required):**
-  - Results table: TC-N | PASS/FAIL | Evidence (screenshot file or command output) | Notes
-  - Bugs found: TC-N | Description | Root cause hint | Screenshot file
-  - Escalations needed: TC-N | Why it needs user action | Exact steps for user
-  - Screenshots taken: list of files saved to qa-screenshots/
-  - Console errors encountered (non-pre-existing)"
+  **IMPORTANT — Write full details to qa-test-progress.json, NOT back to the main session.**
+  After completing the batch, update qa-test-progress.json:
+  - Set batches[<B-1>].status = 'completed'
+  - Append each result to batches[<B-1>].results: {id, status, evidence_file, notes}
+  - Append bugs to root bugs_found array: {tc_id, title, severity, root_cause_file, screenshot}
+  - Append new screenshot filenames to screenshots array
+  - Update summary pass/fail counts
+
+  **Return to main session (≤ 400 words, summaries ONLY):**
+  - Batch status: X PASS, Y FAIL out of N tests
+  - Bugs found: TC-N — one-line description (severity) [list only, no detail]
+  - Screenshots saved: [list of filenames only]
+  - Escalations needed: TC-N — one line why [if any]
+  - Blockers: [anything that stopped testing early]
+  Do NOT return full test case tables, evidence descriptions, or page content."
 )
 ```
 
 #### Step 4 — After each batch completes
 
-1. **Print results** — display the sub-agent's results table so the user sees progress
-2. **Update checkpoint file** — mark the batch as `"status": "completed"`, append test results and bugs
-3. **Handle escalations** — if the sub-agent flagged any Option 2 items, present them to the user now (batched, not one at a time)
-4. **Spawn next batch** — only after the current batch is done and any escalations are resolved
+**The sub-agent already updated `qa-test-progress.json`.** The main session only needs to:
+
+1. **Print one-line summary** — `[Batch B] X PASS, Y FAIL — Z bugs found`
+2. **Handle escalations** — if the sub-agent returned any escalations, present them to the user now (batched, not one at a time)
+3. **Spawn next batch** — only after escalations are resolved
+
+**Do NOT print the full results table** — it is in `qa-test-progress.json`. Reading it back into the main session defeats the purpose.
 
 ```bash
-# After each batch, update the checkpoint
-# (read, update, write back)
+# Verify the batch was written correctly (optional sanity check)
 python3 -c "
-import json, sys
+import json
 data = json.load(open('qa-test-progress.json'))
-data['batches'][<B-1>]['status'] = 'completed'
-data['completed_tests'].extend([...])
-json.dump(data, open('qa-test-progress.json', 'w'), indent=2)
+b = data['batches'][<B-1>]
+print(f'Batch {b[\"batch\"]}: {b[\"status\"]} — {len([r for r in b[\"results\"] if r[\"status\"]==\"PASS\"])} PASS, {len([r for r in b[\"results\"] if r[\"status\"]==\"FAIL\"])} FAIL')
+print(f'Total bugs: {len(data[\"bugs_found\"])}')
+print(f'Summary: {data[\"summary\"]}')
 "
 ```
 
 #### Step 5 — After all batches complete
 
-Print a consolidated summary before proceeding to gap evaluation:
+```bash
+# Read final summary from checkpoint file
+python3 -c "
+import json
+data = json.load(open('qa-test-progress.json'))
+s = data['summary']
+print(f'[Step 4] All batches complete.')
+print(f'Total: {s[\"pass\"]+s[\"fail\"]+s[\"skipped\"]} tests — {s[\"pass\"]} PASS, {s[\"fail\"]} FAIL, {s[\"skipped\"]} skipped')
+print(f'Bugs found: {len(data[\"bugs_found\"])}')
+print(f'Screenshots: {len(data[\"screenshots\"])} files in qa-screenshots/')
+"
 ```
-[Step 4] All batches complete.
-Total: <N> tests executed — <N> PASS, <N> FAIL
-Bugs found: <N>
-Screenshots: <N> files in qa-screenshots/
-```
+
+**MANDATORY CHECKPOINT — run `/save-session` now.**
+
+Print: `[CHECKPOINT] All batches done. Full results in qa-test-progress.json. Running /save-session before gap evaluation.`
+
+This ensures if the session runs out of context during gap evaluation or report writing, everything can be resumed from this point.
 
 Then proceed to Step 4.18 (Gap Evaluation) and Step 5 (Pre-Verdict Check).
 
@@ -919,10 +1005,21 @@ Then proceed to Step 4.18 (Gap Evaluation) and Step 5 (Pre-Verdict Check).
 If the session stops before all batches are done, resume by reading the checkpoint:
 
 ```bash
-cat qa-test-progress.json  # shows completed/pending batches
+python3 -c "
+import json
+data = json.load(open('qa-test-progress.json'))
+print('PR:', data['pr'], '—', data['pr_title'])
+print('Staging:', data['env']['staging_url'])
+for b in data['batches']:
+    print(f'  Batch {b[\"batch\"]}: {b[\"status\"]} ({len(b[\"results\"])} results)')
+print('Total bugs:', len(data['bugs_found']))
+print('Summary:', data['summary'])
+"
 ```
 
-Tell Claude: "Resume from qa-test-progress.json — batches N through M are already done." Claude will spawn sub-agents only for the pending batches.
+This output tells you exactly which batches are pending. Spawn sub-agents only for batches with `"status": "pending"`. The env, test cases, and results from completed batches are already in the file — do not re-run them.
+
+**The checkpoint file is the complete session state.** A new session with only this file can finish the QA without re-analyzing the PR or re-running completed tests.
 
 ### Testing Priority
 
@@ -1267,15 +1364,34 @@ All screenshots have been captured, console messages checked, and network reques
 
 ## Step 6: Final Report (parallel with Step 7 cleanup + Step 9 screenshot upload)
 
-> Load `references/report-template.md` for the mandatory report structure, image embedding rules, severity classification, and examples of strong reports.
+> **Report writing runs in a sub-agent.** Do NOT write the report in the main session — the report content is large and loading reference files alongside it would overflow the main context.
 
-Save the report as `QA-Report-PR-{NUMBER}.md` in the project root.
+**Spawn a report-writing sub-agent:**
 
-If testing multiple PRs, also generate the Multi-PR Summary Report after all individual reports are complete — see Step 0.5 and `references/report-template.md` "Multi-PR Summary Report Template" section.
+```
+Agent(
+  description="Write QA report for PR #<N>",
+  prompt="You are a QA report writer. Write the final QA report based on completed test results.
 
-The report template defines **13 mandatory sections** in a fixed order. Copy the skeleton from the template and fill in each section. Do not skip sections, reorder them, or invent new headings. If a section has no findings, keep it and write "None found" or "Not applicable."
+  **Data source:** Read qa-test-progress.json for all test results, bugs, screenshots, and analysis.
+  **UX analysis:** [paste the 400-word summary returned by the UX background agent]
+  **Cloudinary URLs:** [paste screenshot URL table if upload was done, else use local paths]
 
-**Image embedding is critical:** Every screenshot must be embedded inline using `![descriptive alt text](qa-screenshots/XX-name.png)` — right where it's relevant (inside bug reports, inside test results). Writing just the filename or path without the `![alt](path)` syntax makes the report unreadable.
+  **Instructions:**
+  1. Load references/report-template.md for the mandatory report structure (13 sections)
+  2. Read qa-test-progress.json completely — this is your only data source
+  3. Write the report to QA-Report-PR-<N>.md in the project root
+  4. Embed all screenshots inline using ![alt text](path) syntax — never bare filenames
+  5. Every bug must have Root Cause: file + line number
+  6. Every test category section must end with — PASS or — FAIL
+  7. Run the Post-Report Validation Checklist from report-template.md before returning
+  8. Return: report file path, section count, bug count, any validation failures found"
+)
+```
+
+The main session only needs the confirmation that the file was written. Do not read the report back into the main session.
+
+If testing multiple PRs, also generate the Multi-PR Summary Report — see `references/report-template.md` "Multi-PR Summary Report Template" section.
 
 ## Step 6.5: Report Validation (MANDATORY)
 
