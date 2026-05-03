@@ -118,11 +118,21 @@ Agent(
   1. BLV (if PR touches thresholds, limits, billing, or permissions):
      Load references/testing-categories.md. Apply the 5-lens BLV methodology.
      Flag any cases where the implementation may run correctly but produce wrong results
-     (wrong threshold, off-by-one guard, misleading output). ≤ 3 sentences.
+     (wrong threshold, off-by-one guard, misleading output). ≤ 3 sentences per finding.
   2. Security (if PR touches Policies, middleware, auth, or API endpoints):
-     Load references/security-testing.md. Flag IDOR risks (cross-team resource access),
-     guard asymmetry, or missing authorization checks. ≤ 2 sentences.
-  3. Return findings. If neither flag applies, return: 'No BLV/security concerns.'"
+     Load references/security-testing.md. Identify IDOR risks (cross-team resource access),
+     guard asymmetry, and missing authorization checks. For each risk, note:
+     - the affected route/resource
+     - which user roles could exploit it
+     - expected vs. actual guard behavior
+  3. Write ALL findings to qa-test-progress.json immediately:
+     {
+       "blv_findings": [{"title": "...", "severity": "...", "description": "..."}],
+       "security_findings": [{"check": "...", "risk": "...", "route": "...", "severity": "...",
+                              "idor_target": "...", "recommendation": "..."}]
+     }
+     Use empty arrays if nothing found for that category.
+  4. Return a ≤ 100-word summary of findings. Full details are in qa-test-progress.json."
 )
 ```
 
@@ -769,9 +779,22 @@ Agent(
      screenshots array), otherwise fall back to local path qa-screenshots/pr<N>/XX.png
   5. Every FAIL section needs: root cause file + line number
   6. Every PASS section needs: at least one screenshot as evidence
-  7. Write report to QA-Report-PR-<N>.md
-  8. Run post-report validation checklist from report-template.md
-  9. Return: file path, journey count, PASS count, FAIL count, validation failures"
+  7. Section 9 — Security Concerns (MANDATORY — never skip or write 'N/A' without checking):
+     a. Load references/security-testing.md for the IDOR report table format
+     b. Pull qa-test-progress.json → security_findings array. For each entry, write a
+        structured security finding using the format from security-testing.md
+     c. Pull any journey tagged 'security' or 'idor' — include their PASS/FAIL results
+        and evidence (screenshots + curl/Playwright response) in the section
+     d. Include the IDOR report table: | Resource | URL Tested | User A | User B | Expected | Actual |
+     e. If security_findings is empty AND no IDOR journeys exist: write
+        "No security concerns identified. [list what was checked and why no risks were found]"
+        — do NOT write just "No security concerns found" without explanation
+  8. Section 5.5 — Logic Flaws: pull qa-test-progress.json → blv_findings array
+     and write each finding using the Logic Flaw format from report-template.md
+  9. Write report to QA-Report-PR-<N>.md
+  10. Run post-report validation checklist from report-template.md
+  11. Return: file path, journey count, PASS count, FAIL count, security findings count,
+      validation failures"
 )
 ```
 
@@ -882,6 +905,8 @@ Element refs are ephemeral — always re-snapshot after any DOM mutation before 
 | Running browser tests in the main session | Browser runs inside sub-agents (Pipeline/Multi-agent) or by you (Interactive) |
 | Writing a screenshot upload loop | One command only: `upload_screenshots.py --dir ... --pr ...` |
 | Spawning report agent before upload | Upload must complete (exit 0 checked) before report agent runs |
+| Writing "No security concerns" without explanation | Section 9 must state what was checked and why no risks apply |
+| Security findings lost after BLV agent returns | BLV+security agent writes to qa-test-progress.json — report reads from there |
 | Leaving browser open after journey | Call browser_close after every journey — even FAIL/BLOCKED |
 | Treating UI toast as server-side proof | Run Command Runner verification, screenshot the output |
 | Creating seed data during testing | Seed data is created in Phase 2 — before any browser opens |
