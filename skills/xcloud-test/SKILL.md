@@ -55,7 +55,7 @@ gh pr view <PR_NUMBER> --json number,title,headRefName,state \
   -q '"\(.number) — \(.title) [\(.headRefName)] (\(.state))"'
 ```
 
-If the PR is closed or not found, notify the user and stop. For multiple PRs, ask: **parallel or sequential?** Then run each PR through all phases.
+If the PR is closed or not found, notify the user and stop. For multiple PRs, ask two questions: (1) **parallel or sequential?** and (2) **same staging server or separate servers?** These determine how environment info is gathered and whether cleanup must run between PRs. See `references/environment-setup.md` → "Environment Setup Modes" for the full handling matrix.
 
 ### 0.2 Gather Staging Environment
 
@@ -94,12 +94,21 @@ Agent(
   5. Cross-reference references/xcloud-feature-map.md to find affected UI pages
   6. For every changed function/class/constant: grep all consumers across:
      Controllers, Services, Jobs, Form Requests, Policies, Blade scripts, Vue, Models, Routes
-  7. Return:
+  7. Business Logic Validation (BLV — apply if PR touches thresholds, limits, billing, or permissions):
+     Load references/testing-categories.md and apply the 5-lens BLV methodology.
+     Flag any cases where the implementation may run correctly but produce wrong results
+     (wrong threshold value, off-by-one guard, misleading output). ≤ 3 sentences.
+  8. Security flag (apply if PR touches Policies, middleware, auth, or API endpoints):
+     Load references/security-testing.md. Flag any IDOR risks (cross-team resource access),
+     guard asymmetry, or missing authorization checks. ≤ 2 sentences.
+  9. Return:
      - Changed files list + what changed in each
      - Affected features and UI pages
      - All cross-feature consumers found
      - PR summary: what / why / how (3 sentences max)
-     - Stack scope: which stacks (nginx/ols/docker) are affected"
+     - Stack scope: which stacks (nginx/ols/docker) are affected
+     - BLV findings (omit section if not applicable)
+     - Security flags (omit section if not applicable)"
 )
 ```
 
@@ -111,17 +120,28 @@ Agent(
   prompt="Deploy PR #<N> to the staging server.
   SSH: <user>@<host>  App path: <path>
 
+  PREFERRED — try the automated deploy script first:
+  python3 ~/.claude/skills/xcloud-test/scripts/deploy_to_staging.py \
+    --pr <N> --ssh '<user>@<host>' --path '<path>'
+  (Add --skip-build for backend-only PRs, --skip-migrate to skip migrations.)
+  If the script exits 0, skip to the VERIFY step below.
+
+  FALLBACK — if the script fails or is unavailable:
   1. Get branch: gh pr view <N> --json headRefName -q '.headRefName'
-  2. SSH to server:
+  2. SSH to server — stash uncommitted changes first if any exist:
      cd <path>
+     git status --short  # check for uncommitted changes
+     git stash           # only if git status showed changes
      git fetch origin && git checkout <branch> && git pull origin <branch>
   3. Clear caches:
      php artisan config:clear && php artisan cache:clear && php artisan route:clear && php artisan view:clear
   4. Run migrations: php artisan migrate --force
   5. If composer.json changed: composer install --no-interaction --no-dev
   6. If frontend files (*.vue, *.js, package.json) changed: npm install && npm run build
-  7. Verify: git branch --show-current && git log --oneline -1
-  8. Return: branch name, commit hash, status (success/failure), any errors"
+
+  VERIFY (always — script or manual):
+  7. git branch --show-current && git log --oneline -1
+  8. Return: branch name, commit hash, deploy method (script/manual), status (success/failure), any errors"
 )
 ```
 
@@ -163,7 +183,7 @@ journey:
   seed_data:
     server:
       stack: "nginx | openlitespeed | docker | openclaw | null"
-      state: "provisioned | <other state>"
+      status: "provisioned | <other state>"   # see environment-setup.md for valid enum values
     site:
       type: "php | wordpress | static | node | null"
   variants:
@@ -196,6 +216,7 @@ For each changed feature or UI page found in Phase 0, generate journeys covering
 - If the PR touches policies or permissions → add a team-member variant to affected journeys
 - If the PR is in stack-specific code but calls a shared service → add OLS/Docker variants and flag for clarification in Phase 3
 - If the PR modifies a migration → add a journey testing behavior on pre-existing data (not just fresh schema)
+- If Phase 0 analysis raised a security flag (IDOR risk) → add an IDOR journey: paid account attempts to access a resource owned by a different team; expected outcome is 403 or redirect, not the resource
 
 **Minimum journey counts:**
 
@@ -251,16 +272,27 @@ php artisan tinker
 
 ```php
 // Inside Tinker — example: Nginx server seed for J-001 + J-001-V1
-$team = Team::where('name', '<your-team-name>')->firstOrFail();
+$user = User::where('email', '<your-paid-test@email.com>')->first();
+$team = Team::find($user->current_team_id);
 
 $server = Server::create([
-    'team_id'    => $team->id,
-    'name'       => 'qa-nginx-' . rand(1000, 9999),
-    'stack'      => 'nginx',         // valid values: see environment-setup.md
-    'state'      => 'provisioned',
-    'public_ip'  => '127.0.0.1',
-    'private_ip' => '127.0.0.1',
-    // ... all required fields from references/environment-setup.md
+    'name'               => 'qa-nginx-' . rand(1000, 9999),
+    'user_id'            => $user->id,
+    'team_id'            => $team->id,
+    'status'             => 'provisioned',    // NOT 'state', NOT 'active' — use enum value
+    'stack'              => 'nginx',           // valid values: see environment-setup.md
+    'is_connected'       => true,
+    'is_provisioned'     => true,
+    'public_ip'          => '10.0.0.1',       // NOT 'ip' — use 'public_ip'
+    'private_ip'         => '10.0.0.1',
+    'ssh_port'           => 22,
+    'ssh_username'       => 'root',
+    'sudo_password'      => '<SUDO_PASSWORD>',
+    'database_type'      => 'mysql_8',
+    'database_name'      => 'xcloud',
+    'database_password'  => '<DB_PASSWORD>',
+    'next_site_prefix_id'=> 1,
+    'ubuntu_version'     => '24.04',
 ]);
 echo "server_id: {$server->id}\n";
 
@@ -621,7 +653,7 @@ After all journeys complete (any mode), check for coverage gaps before writing t
 
 ### Minimum Gap Rule
 
-**Find at least 2 gaps.** If you find zero, re-examine the changed file list and consumer list — gaps exist. Common missed gaps:
+**Find at least 2 gaps.** If you find zero, describe your coverage check methodology before concluding coverage is complete — premature zero-gap declarations are a common failure mode. Common missed gaps:
 - Forgot to test the feature with pre-existing data (only tested on fresh seed)
 - Forgot to test browser refresh after a state change
 - Forgot the migration behavior on rows that existed before the migration
@@ -648,7 +680,7 @@ Agent(
   2. Load references/report-template.md for the mandatory structure
   3. Map journeys to report sections: journey ID = section heading
      Format: '## J-001: <name> — PASS'  or  '## J-002: <name> — FAIL'
-  4. Embed all screenshots inline: ![alt text](path) — never bare filenames
+  4. Embed all screenshots inline: ![alt text](qa-screenshots/pr<N>/XX-description.png) — use the pr<N>/ subdirectory prefix, never bare filenames
   5. Every FAIL section needs: root cause file + line number
   6. Every PASS section needs: at least one screenshot as evidence
   7. Write report to QA-Report-PR-<N>.md
@@ -667,6 +699,25 @@ python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
 ```
 
 **This is the only permitted upload method.** Never write a loop, curl command, or custom upload script.
+
+### Optional: UX Critique (Background)
+
+If the PR includes UI changes, spawn a background agent alongside report writing:
+
+```
+Agent(
+  run_in_background=true,
+  description="UX critique for PR #<N>",
+  prompt="Review the UI changes in PR #<N> from a UX and competitive perspective.
+  Read qa-test-progress.json for screenshot paths and journey outcomes.
+  Focus on: interaction clarity, error message quality, consistency with the rest of xCloud UI,
+  and any obvious UX regressions introduced by this PR.
+  Keep findings to ≤ 5 bullet points.
+  Append findings to QA-Report-PR-<N>.md under a '## UX Observations' section."
+)
+```
+
+Omit entirely for backend-only PRs (no Vue/template changes).
 
 ### Cleanup
 
