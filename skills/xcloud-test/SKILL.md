@@ -136,6 +136,18 @@ Agent(
   prompt="Deploy PR #<N> to the staging server.
   SSH: <user>@<host>  App path: <path>
 
+  STEP 0 — CHECK IF ALREADY DEPLOYED (always run first):
+  Get the PR's head commit:
+    PR_COMMIT=$(gh pr view <N> --json headRefOid -q '.headRefOid')
+    PR_BRANCH=$(gh pr view <N> --json headRefName -q '.headRefName')
+  Get what is currently on the server:
+    DEPLOYED_BRANCH=$(ssh <user>@<host> 'cd <path> && git branch --show-current')
+    DEPLOYED_COMMIT=$(ssh <user>@<host> 'cd <path> && git rev-parse HEAD')
+  If DEPLOYED_BRANCH == PR_BRANCH AND DEPLOYED_COMMIT == PR_COMMIT:
+    → Skip deployment entirely.
+    → Return: branch name, commit hash, deploy method (already-deployed), status (success)
+  Otherwise: proceed with deployment below.
+
   PREFERRED — try the automated deploy script first:
   python3 ~/.claude/skills/xcloud-test/scripts/deploy_to_staging.py \
     --pr <N> --ssh '<user>@<host>' --path '<path>'
@@ -157,7 +169,7 @@ Agent(
 
   VERIFY (always — script or manual):
   7. git branch --show-current && git log --oneline -1
-  8. Return: branch name, commit hash, deploy method (script/manual), status (success/failure), any errors"
+  8. Return: branch name, commit hash, deploy method (script/manual/already-deployed), status (success/failure), any errors"
 )
 ```
 
