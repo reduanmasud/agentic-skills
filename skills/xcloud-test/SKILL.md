@@ -559,7 +559,9 @@ Agent(
      - Open xCloud UI: Server > Management > Commands
      - Run the verification command
      - Screenshot the output — this is your server-side evidence
-  9. Close browser when done
+  9. Close browser: call browser_close tool. MANDATORY — always call this, even if the journey
+     FAILS or is BLOCKED. Never leave a browser session open. If this agent runs multiple journeys
+     (a group), call browser_close after each journey before opening a new session for the next.
 
   Write to qa-test-progress.json under journeys[<id>]:
   {
@@ -738,11 +740,22 @@ Print: `[Phase 6] <N> gaps found — dispatching <N> journeys in <N> groups`
 
 ---
 
-## Phase 7: Reporting + Cleanup (Parallel)
+## Phase 7: Reporting + Cleanup
 
-Spawn report-writing agent and run cleanup simultaneously.
+### Step 7.1 — Upload Screenshots (BLOCKING — run first, before report)
 
-### Report Agent
+```bash
+python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
+  --dir qa-screenshots/pr<N> --pr <N>
+```
+
+**This is mandatory and must complete before spawning the report agent.** Check the exit code:
+- Exit 0 → upload succeeded. The script prints Cloudinary URLs — save them.
+- Non-zero exit → print the error, warn the user, but continue to the report using local paths.
+
+**This is the only permitted upload method.** Never write a loop, curl command, or custom upload script.
+
+### Step 7.2 — Report + UX Critique + Cleanup (spawn all in parallel after upload)
 
 ```
 Agent(
@@ -752,7 +765,8 @@ Agent(
   2. Load references/report-template.md for the mandatory structure
   3. Map journeys to report sections: journey ID = section heading
      Format: '## J-001: <name> — PASS'  or  '## J-002: <name> — FAIL'
-  4. Embed all screenshots inline: ![alt text](qa-screenshots/pr<N>/XX-description.png) — use the pr<N>/ subdirectory prefix, never bare filenames
+  4. Embed screenshots: use Cloudinary URLs if upload succeeded (from qa-test-progress.json
+     screenshots array), otherwise fall back to local path qa-screenshots/pr<N>/XX.png
   5. Every FAIL section needs: root cause file + line number
   6. Every PASS section needs: at least one screenshot as evidence
   7. Write report to QA-Report-PR-<N>.md
@@ -761,18 +775,7 @@ Agent(
 )
 ```
 
-### Screenshot Upload
-
-Run this immediately after spawning the report agent (parallel):
-
-```bash
-python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
-  --dir qa-screenshots/pr<N> --pr <N>
-```
-
-**This is the only permitted upload method.** Never write a loop, curl command, or custom upload script.
-
-### Optional: UX Critique (Background)
+### Optional: UX Critique (spawn in same message as report agent)
 
 If the PR includes UI changes, spawn a background agent alongside report writing:
 
@@ -878,6 +881,8 @@ Element refs are ephemeral — always re-snapshot after any DOM mutation before 
 |---|---|
 | Running browser tests in the main session | Browser runs inside sub-agents (Pipeline/Multi-agent) or by you (Interactive) |
 | Writing a screenshot upload loop | One command only: `upload_screenshots.py --dir ... --pr ...` |
+| Spawning report agent before upload | Upload must complete (exit 0 checked) before report agent runs |
+| Leaving browser open after journey | Call browser_close after every journey — even FAIL/BLOCKED |
 | Treating UI toast as server-side proof | Run Command Runner verification, screenshot the output |
 | Creating seed data during testing | Seed data is created in Phase 2 — before any browser opens |
 | Journeys without variants | Every journey needs at least one variant (blocked user or different role) |
@@ -907,7 +912,7 @@ Print a one-line status at every phase boundary and every journey result. Never 
 [Phase 4] Mode selected: Pipeline / Multi-agent / Interactive
 [Phase 5] [Group N] J-<ID> PASS | J-<ID> FAIL — <bug>    ← one line per group as it arrives
 [Phase 6] Gap evaluation: <N> gaps found, <N> journeys added
-[Phase 7] Uploading <N> screenshots...
+[Phase 7] Uploading <N> screenshots... (blocking — waiting for exit 0)
 [Phase 7] Cleaning up <N> seed records...
 [Phase 7] Report written: QA-Report-PR-<N>.md
 [Phase 7] Cleanup complete
