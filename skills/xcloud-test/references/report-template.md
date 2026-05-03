@@ -168,15 +168,15 @@ The screenshot must be embedded inline using `![alt](path)` right after "Actual 
 
 ### Section 5.5: Logic Flaws (Business Logic Validation)
 
-If Step 1.4 generated [BLV] test cases and any of them failed, report the logic flaws here. Logic flaws are distinct from regular bugs — they are design decisions that contradict domain best practices or expected behavior, not coding errors. If no BLV test cases were generated, or all passed, write: "No logic flaws identified."
+If the BLV + Security agent in Phase 0 wrote findings to `qa-test-progress.json → blv_findings`, and any of those findings were confirmed during testing, report the logic flaws here. Logic flaws are distinct from regular bugs — they are design decisions that contradict domain best practices or expected behavior, not coding errors. If `blv_findings` is empty, or all findings were ruled out during testing, write: "No logic flaws identified."
 
 For each logic flaw:
 
 ```
 ### Logic Flaw #1: {Descriptive Title}
 
-**Severity:** Critical / High / Medium / Low (from consequence tier in EBS)
-**Confidence:** High / Medium / Low (from Expected Behavior Specification)
+**Severity:** Critical / High / Medium / Low (from BLV consequence tier)
+**Confidence:** High / Medium / Low (as assessed by BLV + Security agent in Phase 0)
 
 **Expected behavior:** {What the feature SHOULD do, based on domain standards/user expectations}
 
@@ -190,7 +190,7 @@ For each logic flaw:
 
 **Suggested fix:** {Concrete recommendation for what the code should do instead}
 
-**Developer response:** {If asked in Step 1.4.3: "Confirmed as intentional" / "Acknowledged as oversight" / "Not asked (high confidence)"}
+**Developer response:** {If queried in Phase 3 adaptive questions: "Confirmed as intentional" / "Acknowledged as oversight" / "Not raised (high confidence finding)"}
 ```
 
 **Severity guidelines for logic flaws:**
@@ -290,7 +290,7 @@ Before saving the report, verify every item below. If any item fails, go back an
 - [ ] **Test category verdicts are present** — every tested category heading ends with "— PASS" or "— FAIL"
 - [ ] **Cleanup table is filled** — either cleanup records or "No test data was created"
 - [ ] **Final verdict has reasoning** — not just "PASS" but why, referencing specific findings
-- [ ] **Logic flaws reported if applicable** — if Step 1.4 generated BLV test cases, their results appear in the test case tables and any failed BLV tests are reported in Section 5.5 (Logic Flaws)
+- [ ] **Logic flaws reported if applicable** — if Phase 0 BLV + Security agent wrote `blv_findings`, their results appear in the test case tables and any confirmed flaws are reported in Section 5.5 (Logic Flaws)
 
 ---
 

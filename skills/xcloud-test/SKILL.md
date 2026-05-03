@@ -147,9 +147,14 @@ Agent(
   SSH: <user>@<host>  App path: <path>
 
   STEP 0 — CHECK IF ALREADY DEPLOYED (always run first):
-  Get the PR's head commit:
+  Get the PR's head commit and state:
+    PR_STATE=$(gh pr view <N> --json state -q '.state')
     PR_COMMIT=$(gh pr view <N> --json headRefOid -q '.headRefOid')
     PR_BRANCH=$(gh pr view <N> --json headRefName -q '.headRefName')
+  If PR_STATE is 'MERGED' or 'CLOSED':
+    → Print a WARNING: "PR #<N> is <state>. The branch may no longer exist on remote.
+      Deploying the PR's head commit directly. This is the merged code, not the current default branch."
+    → Proceed using the head commit hash (FETCH_HEAD), not the branch name.
   Get what is currently on the server:
     DEPLOYED_BRANCH=$(ssh <user>@<host> 'cd <path> && git branch --show-current')
     DEPLOYED_COMMIT=$(ssh <user>@<host> 'cd <path> && git rev-parse HEAD')
@@ -183,7 +188,9 @@ Agent(
 )
 ```
 
-If deploy fails → report error, stop this PR. If analysis fails → report error, stop.
+If deploy fails → report error, stop this PR.
+If analysis fails → report error AND cancel/abandon the deploy agent if it is still running (no further action needed from it). Stop this PR.
+If analysis returns but flags no changed files → warn the user and ask whether to continue or stop.
 
 Print when both return:
 ```
@@ -220,7 +227,7 @@ journey:
   server_verification: "<Command Runner or SSH command to verify server state — null if UI-only>"
   seed_data:
     server:
-      stack: "nginx | openlitespeed | docker | openclaw | null"
+      stack: "nginx | openlitespeed | docker_nginx | openclaw | null"
       status: "provisioned | <other state>"   # see environment-setup.md for valid enum values
     site:
       type: "php | wordpress | static | node | null"
@@ -361,9 +368,15 @@ After creating each record, verify it exists:
 ```bash
 php artisan tinker --execute="
 \$s = Server::find(<id>);
-echo \$s->name . ' | ' . \$s->stack . ' | ' . \$s->state;
+echo \$s->name . ' | ' . \$s->stack . ' | ' . \$s->status;
 "
 ```
+
+**Tinker failure protocol:** If Tinker throws an exception, returns null, or exits non-zero:
+1. Print the exact error message
+2. Stop immediately — do not proceed to Phase 3 with null or missing seed IDs
+3. Report: `[Phase 2 ERROR] Seed creation failed for <record type>: <error>. Fix the seed script and rerun Phase 2.`
+4. Do not silently set IDs to `null` and continue — a missing seed causes silent test failures that look like real bugs
 
 Write all created IDs to `qa-test-progress.json` immediately:
 
@@ -490,7 +503,15 @@ Which mode? (A / B / C)
 
 ## Phase 5A: Pipeline Mode
 
-Write the full `qa-test-progress.json` checkpoint first, then group journeys by seed-data conflicts and dispatch in batches.
+**Re-run detection (check before writing anything):** If `qa-test-progress.json` already exists and contains `"pr": "<same PR number>"` with a non-empty `journeys` array, print:
+```
+[WARNING] qa-test-progress.json already has results for PR #<N>.
+Overwriting will lose all previous test data (journeys, bugs, screenshots, blv_findings, security_findings).
+Type "overwrite" to proceed, or "abort" to stop.
+```
+Wait for the user's response before continuing.
+
+**Checkpoint write rule:** Merge into `qa-test-progress.json` — do not overwrite the whole file. Preserve any keys written by earlier phases (particularly `blv_findings`, `security_findings`, and `seed_data`). Only initialize keys that do not already exist. Then group journeys by seed-data conflicts and dispatch in batches.
 
 ### Grouping Logic
 
@@ -518,6 +539,8 @@ Agent(description="Execute Group 4: J-004 + J-004-V1 (server_id=99)", prompt="..
 
 ### Checkpoint File
 
+Merge this structure into `qa-test-progress.json`. For each key, only set it if it does not already exist in the file — never overwrite `blv_findings`, `security_findings`, or `seed_data` written by Phase 0/2:
+
 ```json
 {
   "pr": "<N>",
@@ -534,8 +557,18 @@ Agent(description="Execute Group 4: J-004 + J-004-V1 (server_id=99)", prompt="..
   "seed_data": [],
   "bugs_found": [],
   "screenshots": [],
+  "blv_findings": [],
+  "security_findings": [],
   "summary": {"pass": 0, "fail": 0, "blocked": 0}
 }
+```
+
+**Merge pseudocode:**
+```python
+existing = json.load(open("qa-test-progress.json")) if file_exists else {}
+defaults = { ...checkpoint schema above... }
+merged = {**defaults, **existing}  # existing keys take priority
+json.dump(merged, open("qa-test-progress.json", "w"))
 ```
 
 ### Journey Agent Template
@@ -573,23 +606,46 @@ Agent(
      FAILS or is BLOCKED. Never leave a browser session open. If this agent runs multiple journeys
      (a group), call browser_close after each journey before opening a new session for the next.
 
-  Write to qa-test-progress.json under journeys[<id>]:
+  IMPORTANT — Do NOT write directly to qa-test-progress.json (concurrent agents will corrupt it).
+  Instead, write each journey result to its own sidecar file:
+    qa-test-progress.<id>.json   (e.g. qa-test-progress.J-001.json)
+
+  Sidecar file format:
   {
-    result: 'PASS' | 'FAIL' | 'BLOCKED',
-    steps: [{step_index, action, observation, screenshot_file}],
-    server_verification_output: '<output or null>',
-    bugs: [{title, severity, root_cause_file, root_cause_line, screenshot_file}]
+    "journey_id": "<id>",
+    "result": "PASS" | "FAIL" | "BLOCKED",
+    "steps": [{"step_index": N, "action": "...", "observation": "...", "screenshot_file": "..."}],
+    "server_verification_output": "<output or null>",
+    "bugs": [{"title": "...", "severity": "...", "root_cause_file": "...", "root_cause_line": N, "screenshot_file": "..."}],
+    "screenshots": [{"file": "...", "description": "..."}]
   }
-  Append screenshots to root screenshots array.
-  Append bugs to root bugs_found array.
-  Update summary counts.
+
+  If this agent handles multiple journeys (a group), write one sidecar file per journey.
+
+  Crash / timeout protocol: If any step throws an unrecoverable error, write the sidecar with
+  result='BLOCKED', note the error in steps, close the browser, and return. Never leave
+  the sidecar file unwritten — the main session checks for it to detect completion.
 
   Return to main session (≤ 200 words):
   - Result: PASS / FAIL / BLOCKED
   - Bugs found: one-line per bug with severity
   - Screenshots saved: filenames only
-  - Blockers: anything that stopped the journey early"
+  - Blockers: anything that stopped the journey early
+  - Sidecar files written: list filenames"
 )
+
+**After each batch completes**, merge all sidecar files into `qa-test-progress.json`:
+```python
+for sidecar_file in glob("qa-test-progress.J-*.json"):
+    data = json.load(open(sidecar_file))
+    main["journeys"][data["journey_id"]] = {"result": data["result"], "steps": data["steps"],
+        "server_verification_output": data["server_verification_output"]}
+    main["bugs_found"].extend(data["bugs"])
+    main["screenshots"].extend(data["screenshots"])
+    main["summary"][data["result"].lower()] += 1
+    os.remove(sidecar_file)   # clean up after merging
+json.dump(main, open("qa-test-progress.json", "w"))
+```
 ```
 
 **After each group agent returns**, print one group summary line — groups may arrive out of order:
@@ -760,7 +816,18 @@ python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
 ```
 
 **This is mandatory and must complete before spawning the report agent.** Check the exit code:
-- Exit 0 → upload succeeded. The script prints Cloudinary URLs — save them.
+- Exit 0 → upload succeeded. The script prints Cloudinary URLs and writes them to `.upload-state.json`.
+  **Write back Cloudinary URLs into `qa-test-progress.json`**:
+  ```python
+  state = json.load(open(".upload-state.json"))
+  main = json.load(open("qa-test-progress.json"))
+  for s in main["screenshots"]:
+      local = s["file"]
+      if local in state["uploaded"]:
+          s["cloudinary_url"] = state["uploaded"][local]
+  json.dump(main, open("qa-test-progress.json", "w"))
+  ```
+  After write-back, every screenshot entry has a `cloudinary_url` field. The report agent reads this field first; if absent, it falls back to the local `file` path.
 - Non-zero exit → print the error, warn the user, but continue to the report using local paths.
 
 **This is the only permitted upload method.** Never write a loop, curl command, or custom upload script.
@@ -775,8 +842,9 @@ Agent(
   2. Load references/report-template.md for the mandatory structure
   3. Map journeys to report sections: journey ID = section heading
      Format: '## J-001: <name> — PASS'  or  '## J-002: <name> — FAIL'
-  4. Embed screenshots: use Cloudinary URLs if upload succeeded (from qa-test-progress.json
-     screenshots array), otherwise fall back to local path qa-screenshots/pr<N>/XX.png
+  4. Embed screenshots: for each screenshot in qa-test-progress.json screenshots array,
+     use screenshots[i].cloudinary_url if present, otherwise fall back to screenshots[i].file
+     (local path). Never hardcode paths — always read from the screenshots array.
   5. Every FAIL section needs: root cause file + line number
   6. Every PASS section needs: at least one screenshot as evidence
   7. Section 9 — Security Concerns (MANDATORY — never skip or write 'N/A' without checking):
@@ -907,6 +975,10 @@ Element refs are ephemeral — always re-snapshot after any DOM mutation before 
 | Spawning report agent before upload | Upload must complete (exit 0 checked) before report agent runs |
 | Writing "No security concerns" without explanation | Section 9 must state what was checked and why no risks apply |
 | Security findings lost after BLV agent returns | BLV+security agent writes to qa-test-progress.json — report reads from there |
+| Journey agents writing qa-test-progress.json concurrently | Agents write per-journey sidecar files (qa-test-progress.J-001.json); main session merges after each batch |
+| Phase 5A checkpoint overwrites blv_findings / security_findings | Checkpoint MERGES into existing file — never full-overwrite; existing keys take priority |
+| Re-running skill on same PR without warning | Phase 5A checks for existing results and asks "overwrite or abort" before writing |
+| Cloudinary upload done but report still uses local paths | After upload exits 0, write cloudinary_url back into screenshots[] in qa-test-progress.json |
 | Leaving browser open after journey | Call browser_close after every journey — even FAIL/BLOCKED |
 | Treating UI toast as server-side proof | Run Command Runner verification, screenshot the output |
 | Creating seed data during testing | Seed data is created in Phase 2 — before any browser opens |
