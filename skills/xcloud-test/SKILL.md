@@ -94,23 +94,39 @@ Agent(
   5. Cross-reference references/xcloud-feature-map.md to find affected UI pages
   6. For every changed function/class/constant: grep all consumers across:
      Controllers, Services, Jobs, Form Requests, Policies, Blade scripts, Vue, Models, Routes
-  7. Business Logic Validation (BLV — apply if PR touches thresholds, limits, billing, or permissions):
-     Load references/testing-categories.md and apply the 5-lens BLV methodology.
-     Flag any cases where the implementation may run correctly but produce wrong results
-     (wrong threshold value, off-by-one guard, misleading output). ≤ 3 sentences.
-  8. Security flag (apply if PR touches Policies, middleware, auth, or API endpoints):
-     Load references/security-testing.md. Flag any IDOR risks (cross-team resource access),
-     guard asymmetry, or missing authorization checks. ≤ 2 sentences.
-  9. Return:
+  7. Return:
      - Changed files list + what changed in each
      - Affected features and UI pages
      - All cross-feature consumers found
      - PR summary: what / why / how (3 sentences max)
      - Stack scope: which stacks (nginx/ols/docker) are affected
-     - BLV findings (omit section if not applicable)
-     - Security flags (omit section if not applicable)"
+     - Flags: (a) does PR touch billing/thresholds/limits/permissions? (b) does PR touch Policies/middleware/auth/API endpoints?"
 )
 ```
+
+**BLV + Security agent** — spawn immediately after the analysis agent returns, **only if** it flagged billing or auth concerns. Runs in background while Phases 1–2 proceed. Wait for it before sending Phase 3 questions.
+
+```
+Agent(
+  run_in_background=true,
+  description="BLV + security analysis for PR #<N>",
+  prompt="Apply business logic and security analysis to PR #<N>.
+
+  Input — paste the consumer list and changed files from the analysis agent output:
+  [paste analysis output here]
+
+  1. BLV (if PR touches thresholds, limits, billing, or permissions):
+     Load references/testing-categories.md. Apply the 5-lens BLV methodology.
+     Flag any cases where the implementation may run correctly but produce wrong results
+     (wrong threshold, off-by-one guard, misleading output). ≤ 3 sentences.
+  2. Security (if PR touches Policies, middleware, auth, or API endpoints):
+     Load references/security-testing.md. Flag IDOR risks (cross-team resource access),
+     guard asymmetry, or missing authorization checks. ≤ 2 sentences.
+  3. Return findings. If neither flag applies, return: 'No BLV/security concerns.'"
+)
+```
+
+Skip this agent entirely for PRs where analysis flagged neither (a) nor (b).
 
 **Deploy agent**:
 
@@ -211,8 +227,10 @@ For each changed feature or UI page found in Phase 0, generate journeys covering
 | **Stack variant** | Same journey repeated on a different server stack | PR modifies stack-specific code |
 | **State variant** | Same journey on a server/site in a different state | PR behavior changes based on existing state |
 
+> **Regression journey scope:** Start the journey from the **consumer's own entry point** — not from the action that creates the state. Assume the primary feature (already tested in the happy-path journey) worked correctly. Pre-set seed data to the post-action state so the regression journey only exercises the consumer's UI or behavior, without repeating the primary feature's steps.
+
 **Variant generation rules:**
-- If the PR touches billing guards → add a free-user variant to EVERY happy-path journey
+- If the PR touches billing guards → identify each **unique guard** (policy method, middleware class, or plan check). Add a free-user billing variant only to the **first** happy-path journey that exercises each unique guard. For other happy-path journeys sharing the same guard, note: `billing guard shared with J-XXX-V1 — not duplicated`. Do NOT add a free-user variant to every journey when they all pass through the same guard.
 - If the PR touches policies or permissions → add a team-member variant to affected journeys
 - If the PR is in stack-specific code but calls a shared service → add OLS/Docker variants and flag for clarification in Phase 3
 - If the PR modifies a migration → add a journey testing behavior on pre-existing data (not just fresh schema)
@@ -261,6 +279,11 @@ Create all test data **before any browser opens**. Never create seed data ad-hoc
 Deduplicate `seed_data` across all journeys. Variants that share the same `(stack, state, site_type)` as their base journey reuse the same records — do not create duplicates.
 
 ### 2.2 Generate Tinker Scripts
+
+**Parallelism rule:** Count independent seed configurations — groups with no foreign-key dependency between them (e.g. nginx server, OLS server, and docker server are independent; a site depends on its parent server).
+
+- **≤ 3 independent configs** → run all in a single SSH → Tinker session (see example below)
+- **4+ independent configs** → spawn one SSH agent per independent config in a **single message** (parallel). Each agent creates its records, verifies them, and writes IDs to `qa-test-progress.json`. Sites that depend on a server must be created in the same agent as their parent server — not in a separate parallel agent.
 
 For each unique seed configuration, generate a Tinker script and run it via SSH on the staging app server:
 
@@ -420,9 +443,9 @@ Choose how you want to proceed:
 
 ──────────────────────────────────────────────────────────
 A)  Pipeline Mode
-    Journeys run one at a time via sequential background agents.
-    You see a one-line result per journey as it completes.
-    Best for: routine PRs, large journey sets, lower token cost.
+    Journeys grouped by seed conflicts; up to 4 groups dispatched in parallel per batch.
+    You see group results as each batch completes (rolling output).
+    Best for: routine PRs, large journey sets, balanced speed and token cost.
 
 B)  Multi-agent Mode
     One agent per journey, all dispatched in parallel.
@@ -445,7 +468,31 @@ Which mode? (A / B / C)
 
 ## Phase 5A: Pipeline Mode
 
-Write the full `qa-test-progress.json` checkpoint first, then dispatch one agent per journey sequentially.
+Write the full `qa-test-progress.json` checkpoint first, then group journeys by seed-data conflicts and dispatch in batches.
+
+### Grouping Logic
+
+Before dispatching any agents:
+1. **Group by shared seeds** — journeys sharing the same `server_id` or `site_id` belong to one group and run sequentially within that group (base journey first, then its variants)
+2. **Independent groups run in parallel** — groups with no shared seed records are dispatched together in one message
+3. **Batch size = 4** — dispatch up to 4 groups per message; wait for all groups in a batch to return before sending the next batch
+
+```
+# Example: 6 journeys across 4 independent seed groups → all dispatched in ONE message
+
+Group 1 (server_id=42): J-001, J-001-V1    ← share same server; run sequentially inside the agent
+Group 2 (server_id=55): J-002, J-002-V1
+Group 3 (site_id=17):   J-003              ← standalone
+Group 4 (server_id=99): J-004, J-004-V1
+
+# Batch 1 — 4 groups, ONE message:
+Agent(description="Execute Group 1: J-001 + J-001-V1 (server_id=42)", prompt="...")
+Agent(description="Execute Group 2: J-002 + J-002-V1 (server_id=55)", prompt="...")
+Agent(description="Execute Group 3: J-003 (site_id=17)", prompt="...")
+Agent(description="Execute Group 4: J-004 + J-004-V1 (server_id=99)", prompt="...")
+
+# If >4 groups exist, wait for Batch 1 to complete, then dispatch Batch 2
+```
 
 ### Checkpoint File
 
@@ -521,14 +568,15 @@ Agent(
 )
 ```
 
-**After each agent returns**, print:
+**After each group agent returns**, print one group summary line — groups may arrive out of order:
+
 ```
-[J-<ID>] PASS                          ← clean pass
-[J-<ID>] FAIL — <bug one-liner>        ← failure with brief description
-[J-<ID>] BLOCKED — <reason>            ← could not execute
+[Group 1 — server_id=42]  J-001 PASS | J-001-V1 PASS
+[Group 2 — server_id=55]  J-002 FAIL — <bug one-liner> | J-002-V1 PASS
+[Group 3 — site_id=17]    J-003 BLOCKED — <reason>
 ```
 
-Run base journey first, then its variants, before moving to the next base journey.
+Within each group agent, the base journey runs first, then its variants sequentially.
 
 ---
 
@@ -660,9 +708,21 @@ After all journeys complete (any mode), check for coverage gaps before writing t
 
 ### Gap Journeys
 
-For each gap found, create a new journey, append it to `qa-test-progress.json`, and execute it in the same mode used for the main journeys.
+For each gap found, create a new journey and append it to `qa-test-progress.json`. Then apply the same seed-conflict grouping as Phase 5A/5B — do not run gap journeys strictly one-at-a-time:
 
-Print: `[Phase 6] <N> gaps found — adding <N> journeys`
+1. Group gap journeys by shared seed records
+2. Independent groups → dispatch in a **single message** (parallel)
+3. Within each group → run sequentially (base before variants)
+
+```
+# Example: 3 gap journeys across 2 independent groups — ONE message:
+Agent(description="Execute gap J-G001 + J-G002 (share server_id=42)", prompt="...")
+Agent(description="Execute gap J-G003 (standalone)", prompt="...")
+```
+
+Gap journeys use the same agent template as Phase 5A.
+
+Print: `[Phase 6] <N> gaps found — dispatching <N> journeys in <N> groups`
 
 ---
 
@@ -833,7 +893,7 @@ Print a one-line status at every phase boundary and every journey result. Never 
 [Phase 3] Round <N> — <N> questions sent
 [Phase 3] Knowledge gathering complete
 [Phase 4] Mode selected: Pipeline / Multi-agent / Interactive
-[Phase 5] J-<ID> PASS / FAIL — <bug one-liner if any>     ← one line per journey
+[Phase 5] [Group N] J-<ID> PASS | J-<ID> FAIL — <bug>    ← one line per group as it arrives
 [Phase 6] Gap evaluation: <N> gaps found, <N> journeys added
 [Phase 7] Uploading <N> screenshots...
 [Phase 7] Cleaning up <N> seed records...
