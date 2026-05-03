@@ -592,6 +592,30 @@ Agent(
 
   Instructions:
   1. Load references/playwright-mcp-guide.md for patterns and auth flow
+
+  BROWSER LOCK (acquire BEFORE any browser tool call):
+  The Playwright MCP server is a shared singleton — parallel agents would fight over the same
+  browser window and share session cookies. Acquire a file lock before opening any browser.
+
+  Lock file: qa-browser.lock
+  Acquire (run this shell snippet via SSH or Bash before step 2):
+    LOCK_FILE="qa-browser.lock"
+    MY_ID="<journey-group-id>"   # e.g. "Group-1-J-001"
+    MAX_WAIT=180
+    elapsed=0
+    while [ -f "$LOCK_FILE" ] && [ $elapsed -lt $MAX_WAIT ]; do
+      sleep 5; elapsed=$((elapsed + 5))
+    done
+    if [ -f "$LOCK_FILE" ]; then
+      echo "BROWSER_LOCK_TIMEOUT after ${MAX_WAIT}s — marking all journeys in this group BLOCKED"
+      exit 1
+    fi
+    echo "$MY_ID" > "$LOCK_FILE"
+    echo "Browser lock acquired by $MY_ID"
+
+  If the lock acquisition times out: write all journeys in this group as BLOCKED with reason
+  "browser_lock_timeout" in their sidecar files and return immediately. Do NOT open a browser.
+
   2. Open browser, navigate to entry_point, log in as actor
   3. Execute every step in the journey YAML in order
   4. Core cycle per step: Navigate → Snapshot → Interact → Snapshot → Screenshot
@@ -605,6 +629,12 @@ Agent(
   9. Close browser: call browser_close tool. MANDATORY — always call this, even if the journey
      FAILS or is BLOCKED. Never leave a browser session open. If this agent runs multiple journeys
      (a group), call browser_close after each journey before opening a new session for the next.
+
+  BROWSER LOCK RELEASE (run immediately after the final browser_close for this group):
+    rm -f "$LOCK_FILE"
+    echo "Browser lock released by $MY_ID"
+
+  Release the lock even if the journey FAILS or BLOCKED — never leave the lock file behind.
 
   IMPORTANT — Do NOT write directly to qa-test-progress.json (concurrent agents will corrupt it).
   Instead, write each journey result to its own sidecar file:
@@ -964,6 +994,28 @@ Element refs are ephemeral — always re-snapshot after any DOM mutation before 
 
 > Load `references/playwright-mcp-guide.md` inside testing sub-agents for the full tool inventory, auth flow, wait strategies, and xCloud UI patterns.
 
+### Browser Isolation in Parallel Modes
+
+The Playwright MCP server is a **shared singleton process** — all sub-agents connect to the same browser instance. Parallel agents without coordination will:
+
+- Navigate over each other's active page
+- Share session cookies (login by Agent 2 logs out Agent 1's session)
+- Have `browser_close` from one agent kill every other agent's browser session
+
+**No MCP-level context isolation is available.** `browser_tabs` creates tabs that share the same cookie jar — a second login in a new tab overwrites the first agent's session.
+
+**Solution: file-based mutex (`qa-browser.lock`).**
+
+Each journey agent acquires the lock before its first `browser_navigate` and releases it after its final `browser_close`. Non-browser work (SSH verifications, seed checks, sidecar JSON writes) still runs concurrently across parallel agents — only the actual browser session is serialized.
+
+| Phase | Parallel? |
+|---|---|
+| Prep (reading journey YAML, SSH seed checks) | Yes — fully concurrent |
+| Browser (navigate → interact → screenshot → close) | No — serialized via lock |
+| Post-browser (sidecar write, cleanup) | Yes — fully concurrent |
+
+**Lock timeout = 180 seconds.** If a group waits longer than 3 minutes for the browser, it marks its journeys BLOCKED and returns. This prevents a crashed agent from holding the lock forever. After a crash, manually delete `qa-browser.lock` before re-running.
+
 ---
 
 ## Common Mistakes
@@ -976,6 +1028,9 @@ Element refs are ephemeral — always re-snapshot after any DOM mutation before 
 | Writing "No security concerns" without explanation | Section 9 must state what was checked and why no risks apply |
 | Security findings lost after BLV agent returns | BLV+security agent writes to qa-test-progress.json — report reads from there |
 | Journey agents writing qa-test-progress.json concurrently | Agents write per-journey sidecar files (qa-test-progress.J-001.json); main session merges after each batch |
+| Parallel agents opening the browser without locking | Each group acquires qa-browser.lock before first browser_navigate; releases after final browser_close |
+| Second agent's login overwriting first agent's session cookie | Same root cause — browser lock prevents concurrent browser sessions entirely |
+| Agent crash leaving qa-browser.lock behind | If browser tests are stuck and qa-browser.lock exists with no active agent, delete it manually |
 | Phase 5A checkpoint overwrites blv_findings / security_findings | Checkpoint MERGES into existing file — never full-overwrite; existing keys take priority |
 | Re-running skill on same PR without warning | Phase 5A checks for existing results and asks "overwrite or abort" before writing |
 | Cloudinary upload done but report still uses local paths | After upload exits 0, write cloudinary_url back into screenshots[] in qa-test-progress.json |
