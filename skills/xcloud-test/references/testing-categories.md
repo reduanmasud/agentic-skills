@@ -276,7 +276,7 @@ Users double-click. Networks retry. Test that repeated actions don't cause dupli
 
 **Real example (PR #4260):** The "Refresh All" button had triple protection: JS guard (`if (refreshing.value) return`), UI disabled (`:disabled="refreshing"`), and loading indicator (`:loading="refreshing"`). And the backend operation was inherently idempotent. Document all layers of protection you find.
 
-<!-- 4.13 (Manual Testing Escalation) is defined in SKILL.md Step 4, not here -->
+<!-- 4.13 (Manual Testing Escalation) is defined in SKILL.md Phase 5C (Interactive Mode), not here -->
 
 ## 4.14 Boundary Testing
 
@@ -563,7 +563,7 @@ $wpOnNginx = Site::create([... 'server_id' => $nginxServer->id, 'type' => 'wordp
 $wpOnOls = Site::create([... 'server_id' => $olsServer->id, 'type' => 'wordpress' ...]);
 ```
 
-Track every record — they all must be cleaned up in Step 8.
+Track every record — they all must be cleaned up in Phase 7 Cleanup.
 
 ### Report Format
 

@@ -55,7 +55,7 @@ gh pr view <PR_NUMBER> --json number,title,headRefName,state \
   -q '"\(.number) — \(.title) [\(.headRefName)] (\(.state))"'
 ```
 
-If the PR is closed or not found, notify the user and stop. For multiple PRs, ask two questions: (1) **parallel or sequential?** and (2) **same staging server or separate servers?** These determine how environment info is gathered and whether cleanup must run between PRs. See `references/environment-setup.md` → "Environment Setup Modes" for the full handling matrix.
+If the PR is **not found**, notify the user and stop. If the PR is **MERGED**, continue — testing a merged PR on staging is valid (the deploy agent will warn about the merged branch and deploy the head commit). If the PR is **CLOSED** (rejected/abandoned, not merged), warn the user and ask whether to continue or stop. For multiple PRs, ask two questions: (1) **parallel or sequential?** and (2) **same staging server or separate servers?** These determine how environment info is gathered and whether cleanup must run between PRs. See `references/environment-setup.md` → "Environment Setup Modes" for the full handling matrix.
 
 ### 0.2 Gather Staging Environment
 
@@ -99,7 +99,7 @@ Agent(
      - Affected features and UI pages
      - All cross-feature consumers found
      - PR summary: what / why / how (3 sentences max)
-     - Stack scope: which stacks (nginx/ols/docker) are affected
+     - Stack scope: which stacks (nginx/openlitespeed/docker_nginx/openclaw) are affected
      - Flags: (a) does PR touch billing/thresholds/limits/permissions? (b) does PR touch Policies/middleware/auth/API endpoints?"
 )
 ```
@@ -309,10 +309,10 @@ Deduplicate `seed_data` across all journeys. Variants that share the same `(stac
 
 ### 2.2 Generate Tinker Scripts
 
-**Parallelism rule:** Count independent seed configurations — groups with no foreign-key dependency between them (e.g. nginx server, OLS server, and docker server are independent; a site depends on its parent server).
+**Parallelism rule:** Count independent seed configurations — groups with no foreign-key dependency between them (e.g. nginx server, OLS server, and docker_nginx server are independent; a site depends on its parent server).
 
 - **≤ 3 independent configs** → run all in a single SSH → Tinker session (see example below)
-- **4+ independent configs** → spawn one SSH agent per independent config in a **single message** (parallel). Each agent creates its records, verifies them, and writes IDs to `qa-test-progress.json`. Sites that depend on a server must be created in the same agent as their parent server — not in a separate parallel agent.
+- **4+ independent configs** → spawn one SSH agent per independent config in a **single message** (parallel). Each agent creates its records, verifies them, and writes IDs to a **per-agent sidecar** (`qa-seed-<stack>.json` e.g. `qa-seed-nginx.json`) instead of writing directly to `qa-test-progress.json`. After all seed agents return, the main session merges all `qa-seed-*.json` sidecars into `qa-test-progress.json["seed_data"]`. This avoids concurrent write corruption between parallel seed agents and the background BLV agent. Sites that depend on a server must be created in the same agent as their parent server — not in a separate parallel agent.
 
 For each unique seed configuration, generate a Tinker script and run it via SSH on the staging app server:
 
@@ -553,7 +553,7 @@ Merge this structure into `qa-test-progress.json`. For each key, only set it if 
     "paid_account": {"email": "<email>", "password": "<pass>"},
     "free_account": {"email": "<email>", "password": "<pass>"}
   },
-  "journeys": [],
+  "journeys": {},
   "seed_data": [],
   "bugs_found": [],
   "screenshots": [],
@@ -666,16 +666,27 @@ Agent(
 
 **After each batch completes**, merge all sidecar files into `qa-test-progress.json`:
 ```python
+import json, os
+from glob import glob
+
+main = json.load(open("qa-test-progress.json"))   # MUST load before the loop
 for sidecar_file in glob("qa-test-progress.J-*.json"):
     data = json.load(open(sidecar_file))
-    main["journeys"][data["journey_id"]] = {"result": data["result"], "steps": data["steps"],
-        "server_verification_output": data["server_verification_output"]}
+    # journeys is a dict keyed by journey_id
+    main["journeys"][data["journey_id"]] = {
+        "result": data["result"],
+        "steps": data["steps"],
+        "server_verification_output": data["server_verification_output"],
+    }
     main["bugs_found"].extend(data["bugs"])
     main["screenshots"].extend(data["screenshots"])
-    main["summary"][data["result"].lower()] += 1
+    result_key = data["result"].lower()   # "pass" | "fail" | "blocked"
+    main["summary"][result_key] = main["summary"].get(result_key, 0) + 1
     os.remove(sidecar_file)   # clean up after merging
-json.dump(main, open("qa-test-progress.json", "w"))
+json.dump(main, open("qa-test-progress.json", "w"), indent=2)
 ```
+
+Handle missing sidecar (agent crashed before writing it): after all agents return, check that a sidecar exists for every dispatched journey. For any journey with no sidecar, write a synthetic BLOCKED entry directly into `main["journeys"]` before saving.
 ```
 
 **After each group agent returns**, print one group summary line — groups may arrive out of order:
@@ -705,7 +716,7 @@ Agent(description="Execute J-002 + J-002-V1 (share server_id=55)", prompt="...")
 Agent(description="Execute J-003 (standalone, site_id=17)", prompt="...")
 ```
 
-Each agent uses the same template as Pipeline Mode. After all return, collect results and update `qa-test-progress.json`.
+Each agent uses the same template as Pipeline Mode (browser lock, sidecar file, crash protocol all apply identically). After all agents return, run the sidecar merge pseudocode from Phase 5A to collect results into `qa-test-progress.json`. Check for missing sidecars (agent crash) and write synthetic BLOCKED entries for any journey with no sidecar.
 
 ---
 
@@ -841,24 +852,28 @@ Print: `[Phase 6] <N> gaps found — dispatching <N> journeys in <N> groups`
 ### Step 7.1 — Upload Screenshots (BLOCKING — run first, before report)
 
 ```bash
-python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
-  --dir qa-screenshots/pr<N> --pr <N>
+# --json outputs {filename: url} map to stdout; use this to avoid the state-file-deleted-on-success bug.
+UPLOAD_JSON=$(python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
+  --dir qa-screenshots/pr<N> --pr <N> --json)
+UPLOAD_EXIT=$?
 ```
 
 **This is mandatory and must complete before spawning the report agent.** Check the exit code:
-- Exit 0 → upload succeeded. The script prints Cloudinary URLs and writes them to `.upload-state.json`.
+- Exit 0 → all uploads succeeded. `UPLOAD_JSON` holds `{"01-login.png": "https://res.cloudinary.com/..."}`.
   **Write back Cloudinary URLs into `qa-test-progress.json`**:
   ```python
-  state = json.load(open(".upload-state.json"))
+  import json, os
+  url_map = json.loads(UPLOAD_JSON)          # flat {filename: url} — no "uploaded" wrapper
   main = json.load(open("qa-test-progress.json"))
   for s in main["screenshots"]:
-      local = s["file"]
-      if local in state["uploaded"]:
-          s["cloudinary_url"] = state["uploaded"][local]
-  json.dump(main, open("qa-test-progress.json", "w"))
+      filename = os.path.basename(s["file"]) # extract "01-login.png" from full path
+      if filename in url_map:
+          s["cloudinary_url"] = url_map[filename]
+  json.dump(main, open("qa-test-progress.json", "w"), indent=2)
   ```
   After write-back, every screenshot entry has a `cloudinary_url` field. The report agent reads this field first; if absent, it falls back to the local `file` path.
-- Non-zero exit → print the error, warn the user, but continue to the report using local paths.
+- Non-zero exit (partial failure) → `UPLOAD_JSON` still contains URLs for files that did upload; run
+  the same write-back above to save partial results, then warn the user and continue with mixed paths.
 
 **This is the only permitted upload method.** Never write a loop, curl command, or custom upload script.
 
