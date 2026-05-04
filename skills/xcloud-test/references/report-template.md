@@ -234,6 +234,49 @@ Pull from `qa-test-progress.json → hlt_findings`. Group by lens. Each finding 
 - **Medium:** Confusing but recoverable; user figures it out after a moment
 - **Low:** Minor polish inconsistency; low user impact
 
+### Section 5.7: Translation / i18n Issues
+
+Pull from `qa-test-progress.json → i18n_findings`. If the array is empty and flag (d) was false, write "No translation issues — PR contained no user-facing string changes." If flag (d) was true but no issues found, list the strings checked and confirm all use translation helpers with existing keys.
+
+Group findings by type. For HARDCODED_STRING and MISSING_KEY findings (critical/high), include a staging screenshot showing what the user actually sees.
+
+```
+## Translation / i18n Issues
+
+### HARDCODED_STRING
+
+#### i18n-001: Hardcoded error message in ServerController
+
+**Severity:** High
+**File:** `app/Http/Controllers/ServerController.php` line 142
+**String:** `'Server creation failed. Please try again.'`
+**Issue:** This string bypasses `__()` — non-English users will always see English text.
+**Recommendation:** Replace with `__('server.create.failed')` and add the key to all language files.
+
+![Staging screenshot showing raw English string](...)
+
+### MISSING_KEY
+
+#### i18n-002: Translation key referenced but not defined
+
+**Severity:** Critical
+**File:** `resources/js/Pages/Server/Create.vue` line 87
+**Key:** `server.php_version.not_supported`
+**Issue:** Key used in `$t('server.php_version.not_supported')` but does not exist in `lang/en/server.php`.
+         Users see the raw key string instead of a message.
+**Recommendation:** Add `'php_version' => ['not_supported' => 'This PHP version is not supported on your server stack.']` to `lang/en/server.php` and all other language files.
+
+### UNTRANSLATED_KEY
+
+#### i18n-003: Key missing from non-English language files
+
+**Severity:** Medium
+**Key:** `server.backup.success`
+**Defined in:** `lang/en/server.php`
+**Missing from:** `lang/fr/server.php`, `lang/de/server.php`
+**Recommendation:** Add the key to all missing language files. Use `null` as placeholder if translation is not ready, so the app falls back to English rather than showing a raw key.
+```
+
 ### Section 6: Observations (Pre-existing Issues)
 
 Document pre-existing issues separately from PR bugs. If none, write "No pre-existing issues observed."
@@ -316,7 +359,7 @@ If FAIL, include a checklist of items that must be fixed before merge:
 
 Before saving the report, verify every item below. If any item fails, go back and fix the report.
 
-- [ ] **All 14 sections present** — Title, PR Summary, Test Environment, Tests Performed, Bugs Found, Logic Flaws (5.5), Human Logic Findings (5.6), Observations, Regression Issues, Performance Observations, Security Concerns, Areas Not Fully Tested, Screenshots, Test Data Cleanup, Final Verdict
+- [ ] **All 15 sections present** — Title, PR Summary, Test Environment, Tests Performed, Bugs Found, Logic Flaws (5.5), Human Logic Findings (5.6), i18n Issues (5.7), Observations, Regression Issues, Performance Observations, Security Concerns, Areas Not Fully Tested, Screenshots, Test Data Cleanup, Final Verdict
 - [ ] **Every screenshot embedded with `![alt](path)`** — search the report for any bare filenames like `qa-screenshots/...` that aren't inside `![]()`
 - [ ] **Every bug has all required fields** — Severity, Summary, Root Cause (file + line), Steps to Reproduce, Tool used, Expected Result, Actual Result, embedded Screenshot
 - [ ] **Every bug has a root cause** — file path and line number, not just "something is wrong"
@@ -328,6 +371,8 @@ Before saving the report, verify every item below. If any item fails, go back an
 - [ ] **Logic flaws reported if applicable** — if Phase 0 BLV + Security agent wrote `blv_findings`, their results appear in the test case tables and any confirmed flaws are reported in Section 5.5 (Logic Flaws)
 - [ ] **Human logic findings reported** — if Phase 0 HLT agent wrote `hlt_findings`, Section 5.6 is present with findings grouped by lens; each finding has staging evidence from a first-time-user journey screenshot
 - [ ] **UX Improvement Recommendations section present** — if PR touched UI files, the "## UX Improvement Recommendations" section is in the report with at least one entry or explicit "none found" with lens coverage explanation
+- [ ] **i18n findings reported** — Section 5.7 is present; if i18n_findings is non-empty, every HARDCODED_STRING and MISSING_KEY entry has a staging screenshot; UNTRANSLATED_KEY entries list all affected languages
+- [ ] **Report reassessment passed** — Step 7.3 returned "REPORT COMPLETE" before cleanup ran; any gaps it found were fixed
 
 ---
 

@@ -100,7 +100,7 @@ Agent(
      - All cross-feature consumers found
      - PR summary: what / why / how (3 sentences max)
      - Stack scope: which stacks (nginx/openlitespeed/docker_nginx/openclaw) are affected
-     - Flags: (a) does PR touch billing/thresholds/limits/permissions? (b) does PR touch Policies/middleware/auth/API endpoints? (c) does PR touch any UI files (*.vue, *.blade.php, front-end JS/CSS, Inertia pages)?"
+     - Flags: (a) does PR touch billing/thresholds/limits/permissions? (b) does PR touch Policies/middleware/auth/API endpoints? (c) does PR touch any UI files (*.vue, *.blade.php, front-end JS/CSS, Inertia pages)? (d) does PR add or change any user-facing strings (labels, button text, error messages, toasts, validation messages, empty states, modal copy)?"
 )
 ```
 
@@ -219,6 +219,74 @@ Agent(
 ```
 
 Skip this agent entirely for PRs where analysis flagged (c) as false (no UI files changed).
+
+**Translation / i18n agent** — spawn immediately after the analysis agent returns, **only if** it flagged (d) user-facing string changes. Runs in background alongside BLV+Security and HLT. Wait for it before sending Phase 3 questions.
+
+```
+Agent(
+  run_in_background=true,
+  description="Translation/i18n check for PR #<N>",
+  prompt="Audit all user-facing string changes in PR #<N> for translation completeness.
+
+  Input — paste the changed files list from the analysis agent output:
+  [paste analysis output here]
+
+  Read every changed PHP, Blade, and Vue file in full. Then:
+
+  STEP 1 — HARDCODED STRING DETECTION
+  For every user-facing string in the changed files (button labels, headings, error messages,
+  toast notifications, validation messages, placeholder text, empty state copy, modal copy):
+  - Is the string wrapped in a translation helper?
+    PHP/Blade: __('key'), trans('key'), @lang('key'), Lang::get('key')
+    Vue/JS: \$t('key'), \$tc('key'), trans() injected via Inertia shared data
+  - Flag every hardcoded string that bypasses these helpers as a MISSING_KEY finding.
+    Hardcoded strings are always severity 'high' — they break all non-English users.
+
+  STEP 2 — KEY EXISTENCE CHECK
+  For every translation key used in the changed files:
+  - Search the repository for the language files:
+      resources/lang/en/*.php
+      lang/en/*.php
+      resources/lang/en.json
+      lang/en.json
+  - Does the key exist in the English source file?
+  - If the key does NOT exist: flag as MISSING_KEY (severity critical — raw key shown to users).
+  - If the key exists: proceed to Step 3.
+
+  STEP 3 — COMPLETENESS ACROSS LANGUAGES
+  List all language directories found under resources/lang/ or lang/ (excluding 'en').
+  For each non-English language directory:
+  - Does it have the same key defined?
+  - If missing: flag as UNTRANSLATED_KEY (severity medium — falls back to English or raw key
+    depending on app config, but non-English users get inconsistent experience).
+
+  STEP 4 — NEW KEY NAMING CONVENTIONS
+  For every NEW translation key introduced by this PR:
+  - Does it follow the existing naming convention in the file it was added to?
+    (e.g. dot-notation 'server.create.success', snake_case 'server_create_success')
+  - Flag naming inconsistencies as LOW severity.
+
+  Write ALL findings to qa-test-progress.json immediately:
+  {
+    'i18n_findings': [
+      {
+        'type': 'MISSING_KEY | UNTRANSLATED_KEY | HARDCODED_STRING | NAMING_CONVENTION',
+        'severity': 'critical | high | medium | low',
+        'file': 'path/to/file.vue',
+        'line': N,
+        'string_or_key': '...',
+        'languages_missing': ['fr', 'de', 'ar'],
+        'recommendation': '...'
+      }
+    ]
+  }
+  Use an empty array if no issues found (do not skip the key).
+
+  Return a ≤ 100-word summary (counts by type and severity). Full details in qa-test-progress.json."
+)
+```
+
+Skip this agent entirely for PRs where analysis flagged (d) as false (no user-facing string changes).
 
 **Deploy agent**:
 
@@ -644,6 +712,7 @@ Merge this structure into `qa-test-progress.json`. For each key, only set it if 
   "blv_findings": [],
   "security_findings": [],
   "hlt_findings": [],
+  "i18n_findings": [],
   "summary": {"pass": 0, "fail": 0, "blocked": 0}
 }
 ```
@@ -995,10 +1064,15 @@ Agent(
      If hlt_findings is empty AND no first-time-user journeys exist: write
      'No human logic issues identified. [state which lenses were checked and why no issues found]'
      — do NOT write just 'None' without explaining what was checked.
-  10. Write report to QA-Report-PR-<N>.md
-  11. Run post-report validation checklist from report-template.md
-  12. Return: file path, journey count, PASS count, FAIL count, security findings count,
-      hlt findings count, validation failures"
+  10. Section 5.7 — Translation / i18n Issues: pull qa-test-progress.json → i18n_findings array.
+      Group by type: HARDCODED_STRING, MISSING_KEY, UNTRANSLATED_KEY, NAMING_CONVENTION.
+      For each finding write: file:line, the string or key, affected languages, recommendation.
+      If i18n_findings is empty: write 'No translation issues found. [state flag (d) was false
+      or list the string changes checked and confirm all use translation helpers with existing keys]'
+  11. Write report to QA-Report-PR-<N>.md
+  12. Run post-report validation checklist from report-template.md
+  13. Return: file path, journey count, PASS/FAIL/BLOCKED counts, security findings count,
+      hlt findings count, i18n findings count, validation failures"
 )
 ```
 
@@ -1037,6 +1111,66 @@ Agent(
   7. Return: count of recommendations by severity"
 )
 ```
+
+### Step 7.3 — Report Reassessment (blocking — run after report + UX agents return)
+
+Spawn one final agent to read the completed report and check for gaps before cleanup runs.
+**Cleanup must NOT start until this agent returns clean.**
+
+```
+Agent(
+  description="Report reassessment for PR #<N>",
+  prompt="Reassess the QA report for PR #<N> for completeness and accuracy.
+
+  Read both sources in full:
+  - QA-Report-PR-<N>.md (the completed report)
+  - qa-test-progress.json (the ground truth from testing)
+
+  Run every check below. Return a numbered gap list — be specific (section name + what is missing).
+  If zero gaps found, return: 'REPORT COMPLETE — no gaps found.'
+
+  COVERAGE CHECKS:
+  1. Journey coverage — every journey ID in qa-test-progress.json['journeys'] has a
+     corresponding '## J-<ID>:' heading in the report. Flag any missing journey section.
+  2. Bug completeness — every entry in qa-test-progress.json['bugs_found'] has a
+     '### Bug #N:' section with all required fields (Severity, Root Cause file+line,
+     Steps to Reproduce, Expected Result, Actual Result, embedded screenshot).
+     Flag any bug missing a field.
+  3. Finding arrays reflected — for each non-empty array in qa-test-progress.json:
+     - blv_findings → Section 5.5 present with matching finding count
+     - hlt_findings → Section 5.6 present with matching finding count
+     - i18n_findings → Section 5.7 present with matching finding count
+     - security_findings → Section 9 present with matching finding count
+     Flag any array that has entries but no corresponding report section, or where
+     the section says 'None' but the array is non-empty.
+  4. Screenshot evidence — every PASS journey section has at least one embedded screenshot.
+     Every FAIL journey section has at least one embedded screenshot at the failure point.
+     Flag any journey section with no images at all.
+  5. Section completeness — all 15 required sections are present (Title, PR Summary,
+     Test Environment, Tests Performed, Bugs Found, 5.5 Logic Flaws, 5.6 Human Logic,
+     5.7 i18n Issues, Observations, Regression Issues, Performance, Security, Areas Not
+     Fully Tested, Screenshots Summary, Test Data Cleanup, Final Verdict).
+     Flag any missing section.
+  6. Final verdict — the verdict (PASS / FAIL / PASS WITH OBSERVATIONS) is consistent
+     with the bugs and findings in the report. If critical or high severity bugs exist,
+     verdict must be FAIL. Flag any verdict that contradicts the findings.
+  7. i18n staging verification — for every HARDCODED_STRING or MISSING_KEY finding in
+     i18n_findings: is there a screenshot in the report showing the actual string on staging?
+     If a critical/high i18n finding has no staging evidence, flag it.
+
+  Return format:
+  GAPS FOUND:
+  1. [Section] [what is missing or wrong]
+  2. ...
+
+  OR: REPORT COMPLETE — no gaps found."
+)
+```
+
+If the reassessment returns gaps:
+- Fix each gap in `QA-Report-PR-<N>.md` before proceeding to Cleanup
+- For missing screenshots: re-open the browser (acquire lock), navigate to the relevant page, capture the evidence, upload, and embed
+- Print: `[Phase 7] Report reassessment: <N> gaps found and fixed` or `[Phase 7] Report reassessment: clean`
 
 ### Cleanup
 
@@ -1169,6 +1303,9 @@ Each journey agent acquires the lock before its first `browser_navigate` and rel
 | Reading code instead of testing | Log in, perform the action, screenshot the result. Code reading = review, not QA. |
 | "Verified by reviewing the diff" as evidence | Trigger the actual scenario on staging and observe the result |
 | Skipping HLT agent for UI PRs | Any PR with Vue/Blade changes gets the HLT agent — it runs in background, costs little, and catches critical UX failures before users hit them |
+| Skipping i18n agent when strings changed | Any PR adding/modifying user-facing strings gets the i18n agent — hardcoded strings and missing keys break non-English users silently |
+| Starting cleanup before reassessment returns clean | Step 7.3 is a hard gate — cleanup must not run while gaps exist in the report |
+| Reassessment agent finding gaps but not fixing them | Every gap the reassessment finds must be fixed in the report before cleanup; don't proceed with known holes |
 | First-time user journey skips "observe" steps | These steps are mandatory — snapshot the page and note what a new user reads before any click, not just what happens after |
 | HLT finding not verified on staging | Every critical/high HLT finding must have a screenshot from a first-time-user journey proving it exists on staging — not just "code says so" |
 | Writing "No human logic issues" without checking all 5 lenses | Section 5.6 must name each lens and state why it found nothing — a blank "none" is always wrong |
@@ -1192,7 +1329,9 @@ Print a one-line status at every phase boundary and every journey result. Never 
 [Phase 5] [Group N] J-<ID> PASS | J-<ID> FAIL — <bug>    ← one line per group as it arrives
 [Phase 6] Gap evaluation: <N> gaps found, <N> journeys added
 [Phase 7] Uploading <N> screenshots... (blocking — waiting for exit 0)
-[Phase 7] Cleaning up <N> seed records...
+[Phase 7] Report agent + UX agent spawned in parallel
 [Phase 7] Report written: QA-Report-PR-<N>.md
+[Phase 7] Reassessment: <N> gaps found / clean
+[Phase 7] Cleaning up <N> seed records...
 [Phase 7] Cleanup complete
 ```
