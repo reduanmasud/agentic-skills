@@ -741,54 +741,42 @@ Agent(
   - Seed data: server_id=<id>, site_id=<id>  (null if not applicable)
   - Screenshots dir: qa-screenshots/pr<N>/
 
-  Playwright prefix: try mcp__plugin_playwright_playwright__ first,
-  fall back to mcp__playwright__ if unavailable. Print which is active.
-
   Instructions:
-  1. Load references/playwright-mcp-guide.md for patterns and auth flow
+  1. Load references/playwright-mcp-guide.md for auth flow and xCloud UI patterns
 
-  BROWSER LOCK (acquire BEFORE any browser tool call):
-  The Playwright MCP server is a shared singleton — parallel agents would fight over the same
-  browser window and share session cookies. Acquire a file lock before opening any browser.
+  All browser interactions use playwright-cli via Bash — each agent spawns its own
+  browser process (no shared singleton, no mutex needed).
 
-  Lock file: qa-browser.lock
-  Acquire (run this shell snippet via SSH or Bash before step 2):
-    LOCK_FILE="qa-browser.lock"
-    MY_ID="<journey-group-id>"   # e.g. "Group-1-J-001"
-    MAX_WAIT=180
-    elapsed=0
-    while [ -f "$LOCK_FILE" ] && [ $elapsed -lt $MAX_WAIT ]; do
-      sleep 5; elapsed=$((elapsed + 5))
-    done
-    if [ -f "$LOCK_FILE" ]; then
-      echo "BROWSER_LOCK_TIMEOUT after ${MAX_WAIT}s — marking all journeys in this group BLOCKED"
-      exit 1
-    fi
-    echo "$MY_ID" > "$LOCK_FILE"
-    echo "Browser lock acquired by $MY_ID"
+  playwright-cli quick reference:
+    playwright-cli navigate <url>                 # navigate to URL
+    playwright-cli snapshot                       # compact YAML listing element refs (e.g. e21)
+    playwright-cli click <ref-or-selector>        # click by ref (e21) or text/CSS selector
+    playwright-cli fill "<selector>" "<value>"    # fill an input field
+    playwright-cli select "<selector>" "<value>"  # choose a dropdown option
+    playwright-cli screenshot --path <file>       # save screenshot to disk (not injected into context)
+    playwright-cli close                          # close browser — MANDATORY at journey end
 
-  If the lock acquisition times out: write all journeys in this group as BLOCKED with reason
-  "browser_lock_timeout" in their sidecar files and return immediately. Do NOT open a browser.
-
-  2. Open browser, navigate to entry_point, log in as actor
+  2. Navigate to entry_point and authenticate:
+     playwright-cli navigate <staging_url><entry_point>
+     playwright-cli snapshot                       # locate login fields
+     playwright-cli fill "[name=email]" "<email>"
+     playwright-cli fill "[name=password]" "<password>"
+     playwright-cli click "[type=submit]"
+     playwright-cli snapshot                       # confirm authenticated state
   3. Execute every step in the journey YAML in order
-  4. Core cycle per step: Navigate → Snapshot → Interact → Snapshot → Screenshot
-  5. Re-snapshot after any DOM change before the next interaction
-  6. Screenshot before and after every key state change
-  7. Run browser_console_messages after every full page load
-  8. If server_verification is not null:
-     - Open xCloud UI: Server > Management > Commands
-     - Run the verification command
-     - Screenshot the output — this is your server-side evidence
-  9. Close browser: call browser_close tool. MANDATORY — always call this, even if the journey
-     FAILS or is BLOCKED. Never leave a browser session open. If this agent runs multiple journeys
-     (a group), call browser_close after each journey before opening a new session for the next.
-
-  BROWSER LOCK RELEASE (run immediately after the final browser_close for this group):
-    rm -f "$LOCK_FILE"
-    echo "Browser lock released by $MY_ID"
-
-  Release the lock even if the journey FAILS or BLOCKED — never leave the lock file behind.
+  4. Core cycle per step: navigate/click → snapshot (read YAML for refs) → interact → snapshot → screenshot
+     Element refs (e.g. e21) are ephemeral — re-snapshot after every DOM change before the next action
+  5. Screenshot before and after every key state change:
+     playwright-cli screenshot --path qa-screenshots/pr<N>/<step-name>.png
+  6. After every full page load, re-snapshot and check for error messages in the YAML output
+  7. If server_verification is not null:
+     - Navigate to Server > Management > Commands in the xCloud UI
+     - Run the verification command via Command Runner
+     - playwright-cli screenshot --path qa-screenshots/pr<N>/server-verify.png — server-side evidence
+  8. Close browser at the end of this group (MANDATORY — even on FAIL or BLOCKED):
+     playwright-cli close
+     If this agent handles multiple journeys (a group), call playwright-cli close after each
+     journey and before navigating to the next journey's entry point.
 
   IMPORTANT — Do NOT write directly to qa-test-progress.json (concurrent agents will corrupt it).
   Instead, write each journey result to its own sidecar file:
@@ -870,7 +858,7 @@ Agent(description="Execute J-002 + J-002-V1 (share server_id=55)", prompt="...")
 Agent(description="Execute J-003 (standalone, site_id=17)", prompt="...")
 ```
 
-Each agent uses the same template as Pipeline Mode (browser lock, sidecar file, crash protocol all apply identically). After all agents return, run the sidecar merge pseudocode from Phase 5A to collect results into `qa-test-progress.json`. Check for missing sidecars (agent crash) and write synthetic BLOCKED entries for any journey with no sidecar.
+Each agent uses the same template as Pipeline Mode (sidecar file and crash protocol apply identically — no browser lock needed since playwright-cli gives each agent its own browser process). After all agents return, run the sidecar merge pseudocode from Phase 5A to collect results into `qa-test-progress.json`. Check for missing sidecars (agent crash) and write synthetic BLOCKED entries for any journey with no sidecar.
 
 ---
 
@@ -1169,7 +1157,7 @@ Agent(
 
 If the reassessment returns gaps:
 - Fix each gap in `QA-Report-PR-<N>.md` before proceeding to Cleanup
-- For missing screenshots: re-open the browser (acquire lock), navigate to the relevant page, capture the evidence, upload, and embed
+- For missing screenshots: use playwright-cli to navigate to the relevant page, capture the evidence, upload, and embed
 - Print: `[Phase 7] Report reassessment: <N> gaps found and fixed` or `[Phase 7] Report reassessment: clean`
 
 ### Cleanup
@@ -1237,41 +1225,44 @@ A logic flaw is a FAIL — not an observation. If the feature produces misleadin
 
 ---
 
-## Playwright MCP (for Pipeline and Multi-agent modes)
+## Playwright CLI (for Pipeline and Multi-agent modes)
 
-Inside testing sub-agents, try prefixes in this order:
-1. `mcp__plugin_playwright_playwright__browser_*` (preferred)
-2. `mcp__playwright__browser_*` (fallback)
+Inside testing sub-agents, all browser interactions use **playwright-cli via Bash** — NOT the Playwright MCP plugin. This delivers ~4× token reduction because:
+- Snapshots are compact YAML (not verbose accessibility trees)
+- Screenshots are written to disk and never injected into context unless explicitly read
+- No MCP schema overhead per tool call
 
-Print which is active at agent start: `Using Playwright MCP (plugin version)` or `Falling back to standalone Playwright`.
+Core interaction cycle: **navigate → snapshot (read YAML) → interact → snapshot → screenshot**
 
-Core interaction cycle: **Navigate → Snapshot → Interact → Snapshot → Screenshot**
+playwright-cli command reference:
 
-Element refs are ephemeral — always re-snapshot after any DOM mutation before the next interaction.
+| Command | Purpose |
+|---|---|
+| `playwright-cli navigate <url>` | Navigate to a URL |
+| `playwright-cli snapshot` | Compact YAML listing element refs — read to determine next action |
+| `playwright-cli click <ref-or-selector>` | Click element by ref (e.g. `e21`) or text/CSS selector |
+| `playwright-cli fill "<selector>" "<value>"` | Fill an input field |
+| `playwright-cli select "<selector>" "<value>"` | Choose a dropdown option |
+| `playwright-cli screenshot --path <file>` | Save screenshot to disk |
+| `playwright-cli close` | Close browser — MANDATORY at end of every journey |
 
-> Load `references/playwright-mcp-guide.md` inside testing sub-agents for the full tool inventory, auth flow, wait strategies, and xCloud UI patterns.
+Element refs (e.g. `e21`) are ephemeral — always re-snapshot after any DOM mutation before the next interaction.
+
+> Load `references/playwright-mcp-guide.md` inside testing sub-agents for auth flow, wait strategies, and xCloud UI patterns.
 
 ### Browser Isolation in Parallel Modes
 
-The Playwright MCP server is a **shared singleton process** — all sub-agents connect to the same browser instance. Parallel agents without coordination will:
+playwright-cli spawns a **separate browser process per agent** — there is no shared singleton. Each parallel agent gets its own browser session, its own cookie jar, and an independent lifecycle. A close or crash in one agent does not affect others.
 
-- Navigate over each other's active page
-- Share session cookies (login by Agent 2 logs out Agent 1's session)
-- Have `browser_close` from one agent kill every other agent's browser session
-
-**No MCP-level context isolation is available.** `browser_tabs` creates tabs that share the same cookie jar — a second login in a new tab overwrites the first agent's session.
-
-**Solution: file-based mutex (`qa-browser.lock`).**
-
-Each journey agent acquires the lock before its first `browser_navigate` and releases it after its final `browser_close`. Non-browser work (SSH verifications, seed checks, sidecar JSON writes) still runs concurrently across parallel agents — only the actual browser session is serialized.
+All three phases run fully concurrently:
 
 | Phase | Parallel? |
 |---|---|
 | Prep (reading journey YAML, SSH seed checks) | Yes — fully concurrent |
-| Browser (navigate → interact → screenshot → close) | No — serialized via lock |
+| Browser (navigate → interact → screenshot → close) | Yes — each agent owns its own browser |
 | Post-browser (sidecar write, cleanup) | Yes — fully concurrent |
 
-**Lock timeout = 180 seconds.** If a group waits longer than 3 minutes for the browser, it marks its journeys BLOCKED and returns. This prevents a crashed agent from holding the lock forever. After a crash, manually delete `qa-browser.lock` before re-running.
+No `qa-browser.lock` file, no timeout, no serialization — parallel journey agents run side by side.
 
 ---
 
@@ -1285,9 +1276,8 @@ Each journey agent acquires the lock before its first `browser_navigate` and rel
 | Writing "No security concerns" without explanation | Section 9 must state what was checked and why no risks apply |
 | Security findings lost after BLV agent returns | BLV+security agent writes to qa-test-progress.json — report reads from there |
 | Journey agents writing qa-test-progress.json concurrently | Agents write per-journey sidecar files (qa-test-progress.J-001.json); main session merges after each batch |
-| Parallel agents opening the browser without locking | Each group acquires qa-browser.lock before first browser_navigate; releases after final browser_close |
-| Second agent's login overwriting first agent's session cookie | Same root cause — browser lock prevents concurrent browser sessions entirely |
-| Agent crash leaving qa-browser.lock behind | If browser tests are stuck and qa-browser.lock exists with no active agent, delete it manually |
+| Using MCP browser tools instead of playwright-cli | All browser interactions in journey agents use playwright-cli via Bash — not mcp__plugin_playwright |
+| Reading screenshot files into context to verify UI state | Screenshots are on disk; avoid reading them inline — use playwright-cli snapshot YAML to determine state |
 | Phase 5A checkpoint overwrites blv_findings / security_findings | Checkpoint MERGES into existing file — never full-overwrite; existing keys take priority |
 | Re-running skill on same PR without warning | Phase 5A checks for existing results and asks "overwrite or abort" before writing |
 | Cloudinary upload done but report still uses local paths | After upload exits 0, write cloudinary_url back into screenshots[] in qa-test-progress.json |
