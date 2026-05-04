@@ -1,132 +1,92 @@
-# Playwright MCP Browser Testing Guide
+# Playwright CLI Browser Testing Guide
 
 ## Tool Inventory
 
-Two Playwright MCP servers may be available. **Prefer the plugin version:**
+All browser interactions use **playwright-cli via Bash** — NOT the MCP plugin tools.
+Each command is a separate Bash call. The CLI maintains browser session state between commands automatically.
 
-| Priority | Prefix | When to use |
-|----------|--------|-------------|
-| 1st (preferred) | `mcp__plugin_playwright_playwright__` | Default — try this first |
-| 2nd (fallback) | `mcp__playwright__` | If plugin version fails |
+| Command | Purpose |
+|---------|---------|
+| `playwright-cli navigate <url>` | Navigate to a URL |
+| `playwright-cli snapshot` | Compact YAML listing element refs (e.g. e21) — read output to determine next action |
+| `playwright-cli click <ref-or-selector>` | Click element by ref (e21) or text/CSS selector |
+| `playwright-cli fill "<selector>" "<value>"` | Fill a text input field |
+| `playwright-cli select "<selector>" "<value>"` | Choose a dropdown option |
+| `playwright-cli press "<key>"` | Press a keyboard key (Enter, Tab, Escape, etc.) |
+| `playwright-cli screenshot --path <file>` | Save screenshot to disk — NOT injected into context |
+| `playwright-cli evaluate "<js>"` | Run JavaScript in the page context |
+| `playwright-cli wait-for-text "<text>"` | Wait until text appears on the page |
+| `playwright-cli close && pkill -f chromium 2>/dev/null \|\| true` | Close browser and force-kill any residual process — MANDATORY at journey end |
 
-All tool names below use short names (e.g., `browser_navigate`). Prepend the active prefix. Available tools:
+## Core Workflow: navigate → snapshot → interact → snapshot → screenshot
 
-| Tool | Purpose |
-|------|---------|
-| `browser_navigate` | Go to a URL |
-| `browser_navigate_back` | Go back in history |
-| `browser_snapshot` | Get page accessibility tree with element refs |
-| `browser_click` | Click an element by ref |
-| `browser_fill_form` | Fill text inputs by ref |
-| `browser_type` | Type text character by character (for autocomplete, search) |
-| `browser_press_key` | Press keyboard keys (Enter, Tab, Escape, etc.) |
-| `browser_hover` | Hover over an element |
-| `browser_select_option` | Select from dropdown/select elements |
-| `browser_drag` | Drag and drop between elements |
-| `browser_file_upload` | Upload files to file input elements |
-| `browser_take_screenshot` | Capture screenshot to file |
-| `browser_console_messages` | Get JavaScript console output |
-| `browser_network_requests` | Get network request log |
-| `browser_evaluate` | Run JavaScript in the page context |
-| `browser_run_code` | Run Playwright code snippets |
-| `browser_wait_for` | Wait for text, URL change, or network idle |
-| `browser_handle_dialog` | Accept/dismiss alert/confirm/prompt dialogs |
-| `browser_tabs` | List and switch between browser tabs |
-| `browser_resize` | Resize the browser viewport |
-| `browser_close` | Close the browser |
-| `browser_install` | Install browser binaries |
-
-## Core Workflow: Navigate -> Snapshot -> Interact -> Verify
-
-**This cycle is mandatory.** You cannot interact with elements without first taking a snapshot.
+**This cycle is mandatory.** Always snapshot after navigating or after any DOM change to get fresh element refs.
 
 ```
-1. browser_navigate  →  Load the page
-2. browser_snapshot   →  Get accessibility tree with element [ref] IDs
-3. browser_click / browser_fill_form  →  Interact using refs from snapshot
-4. browser_snapshot   →  Re-snapshot to verify state changes
-5. browser_take_screenshot  →  Capture visual evidence
+1. playwright-cli navigate <url>            # load the page
+2. playwright-cli snapshot                  # read YAML output — find element refs
+3. playwright-cli click <ref>               # interact using refs from snapshot
+4. playwright-cli snapshot                  # re-snapshot to verify state changed
+5. playwright-cli screenshot --path <file>  # save visual evidence to disk
 ```
 
-**Why snapshots are required:** Element refs are ephemeral accessibility tree IDs, NOT CSS selectors. They are assigned when you snapshot and become invalid after any DOM mutation (page navigation, Inertia visit, AJAX response, modal open/close). Always re-snapshot after any interaction before the next one.
+**Why snapshots are required:** Element refs (e.g. `e21`) are ephemeral — they are assigned on each snapshot and become invalid after any DOM mutation (navigation, Inertia visit, AJAX response, modal open/close). Always re-snapshot after any interaction before the next one.
 
-**Common mistake:** Trying to click a ref from a previous snapshot after the page has changed. If you get a "ref not found" error, take a new snapshot.
+**Common mistake:** Using a ref from an old snapshot after the page has changed. If a click fails, take a fresh snapshot and use the new ref.
 
 ## Authentication Flow
 
-### Login Steps (from xCloud e2e test patterns)
+### Login Steps
 
-1. Navigate to `{staging-url}/login`
-2. **Dismiss cookie banner** — look for "Accept All" button, click if visible (may not appear if cookies already accepted)
-3. Fill email: find the email input ref from snapshot, use `browser_fill_form`
-4. Fill password: find the password input ref, use `browser_fill_form`
-5. Click the submit/login button ref
-6. **Wait for Inertia redirect** — use `browser_wait_for` with URL change (URL should no longer contain `/login`)
-7. Take a snapshot to verify you're on the dashboard
-
-```
-browser_navigate → {staging-url}/login
-browser_snapshot → find cookie banner "Accept All" button
-browser_click → dismiss cookie banner (if present)
-browser_snapshot → find email input, password input, submit button refs
-browser_fill_form → fill email field
-browser_fill_form → fill password field
-browser_click → click submit button
-browser_wait_for → URL no longer contains "/login"
-browser_snapshot → verify dashboard loaded
+```bash
+playwright-cli navigate {staging-url}/login
+playwright-cli snapshot                          # find cookie banner if present
+playwright-cli click "Accept All"                # dismiss cookie banner (skip if not found)
+playwright-cli snapshot                          # find email input, password input, submit button
+playwright-cli fill "[name=email]" "<email>"
+playwright-cli fill "[name=password]" "<password>"
+playwright-cli click "[type=submit]"
+playwright-cli wait-for-text "Dashboard"         # wait for redirect away from /login
+playwright-cli snapshot                          # verify authenticated state
 ```
 
 ### Logout Flow
 
-To log out of the current session:
-
-1. **Click on the profile/avatar** — look for the user's name or avatar in the top-right corner of the page
-2. `browser_snapshot` → find the profile menu element ref
-3. `browser_click` → click the profile/avatar ref
-4. `browser_snapshot` → find the "Log Out" or "Logout" option in the dropdown menu
-5. `browser_click` → click the Logout ref
-6. `browser_wait_for` → wait for URL to contain `/login` (redirect to login page)
-7. `browser_snapshot` → verify you're on the login page
-
-```
-browser_snapshot → find profile/avatar ref in top-right
-browser_click → click profile/avatar
-browser_snapshot → find "Log Out" menu item
-browser_click → click Log Out
-browser_wait_for → URL contains "/login"
-browser_snapshot → verify login page
+```bash
+playwright-cli snapshot                          # find profile/avatar in top-right
+playwright-cli click "<profile-ref>"             # click avatar
+playwright-cli snapshot                          # find Log Out menu item
+playwright-cli click "Log Out"
+playwright-cli wait-for-text "Login"             # wait for redirect to login page
+playwright-cli snapshot                          # verify on login page
 ```
 
-### Multi-Account Testing
+### Multi-Account Testing (Switching Roles)
 
-When switching between user roles, choose the appropriate method:
+**Option A — logout and re-login** (when testing logout behavior):
+1. Follow logout flow above
+2. Login as new user
 
-**Option A: Logout and re-login (preferred for testing logout behavior)**
-1. Follow the **Logout Flow** above to log out
-2. Authenticate as the new user on the login page
-3. Track which screenshots belong to which role (include role in screenshot name)
+**Option B — fresh browser** (guaranteed clean session, clears all cookies and localStorage):
+```bash
+playwright-cli close && pkill -f chromium 2>/dev/null || true
+playwright-cli navigate {staging-url}/login
+# login as new user
+```
 
-**Option B: Close browser (guaranteed clean session)**
-1. **Close the browser** with `browser_close`
-2. Navigate to the login page fresh
-3. Authenticate as the new user
-4. Track which screenshots belong to which role (include role in screenshot name)
-
-Use **Option A** when you need to verify logout works or want to test session cleanup. Use **Option B** when you need a guaranteed clean slate (clears cookies, localStorage, all session state).
-
-**End-of-testing close:** The browser is also closed at the end of all testing (Step 6.7 in SKILL.md) before the report is written. This is separate from role-switching closes during testing.
+Use **Option B** when you need a guaranteed clean slate between roles.
 
 ## xCloud UI Patterns
 
 ### Inertia.js Page Transitions
-- xCloud uses Inertia.js — page transitions do NOT trigger full page reloads
-- After clicking a link, use `browser_wait_for` (text or URL change) instead of waiting for navigation
+- xCloud uses Inertia.js — page transitions do **not** trigger full page reloads
+- After clicking a nav link: `playwright-cli wait-for-text "<expected heading>"` instead of waiting for navigation
 - Always re-snapshot after an Inertia visit — the entire DOM is replaced
 
 ### DataTableV2 Tables
-- Tables use `DataTableV2` component with `XTh`, `XTr`, `XTd` sub-components
-- Rows have clickable elements — snapshot to find the right refs
-- Pagination links appear at the bottom if data spans multiple pages
+- Tables use `DataTableV2` with `XTh`, `XTr`, `XTd` sub-components
+- Rows have clickable elements — snapshot to find the correct refs
+- Pagination appears at the bottom if data spans multiple pages
 
 ### Modal Dialogs
 - Modals overlay the page — after triggering a modal, snapshot to get the modal's element refs
@@ -134,166 +94,110 @@ Use **Option A** when you need to verify logout works or want to test session cl
 - Delete confirmations use `useFlash().deleteConfirmation()` pattern
 
 ### Toast Notifications
-- Success/error messages appear as toast notifications
-- After an action, snapshot to check for toast text in the accessibility tree
-- Toasts auto-dismiss — capture quickly or check console/network instead
+- Success/error toasts appear and auto-dismiss within seconds
+- After an action: `playwright-cli screenshot --path <file>` immediately before taking another action
+- Check snapshot YAML for toast text — it appears as a text node in the accessibility tree
 
 ### Switch/Toggle Components
-- Toggle switches render as clickable elements — use `browser_click` on the switch ref
-- Check `:disabled` state in snapshot attributes
-- Some toggles trigger immediate API calls, others require a save button
+- Toggle switches are clickable elements — `playwright-cli click <switch-ref>`
+- Check snapshot YAML for `:disabled` attribute before clicking
+- Some toggles trigger immediate API calls; others require a save button
 
 ### Sidebar Navigation
-- Main nav is in a sidebar — snapshot reveals all nav link refs
+- Main nav is a sidebar — snapshot reveals all nav link refs
 - Sub-navigation uses tabs within pages
 
 ## Screenshot Management
 
-### Cloudinary Upload (When Available)
+### Directory and Naming
 
-**Before taking any screenshots**, check if all 3 Cloudinary env vars are set:
-
-```bash
-# Check all 3 required Cloudinary env vars
-echo "CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME:-(not set)}"
-echo "CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY:-(not set)}"
-echo "CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET:-(not set)}"
+Save all screenshots to `qa-screenshots/pr<N>/` with sequential naming:
+```
+qa-screenshots/pr42/01-login.png
+qa-screenshots/pr42/02-php-install-before.png
+qa-screenshots/pr42/03-php-install-after.png
+qa-screenshots/pr42/04-free-user-blocked.png
 ```
 
-If ALL three — `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` — are set, **upload every screenshot to Cloudinary** after capturing and use the returned URL in the report. This makes reports readable on GitHub without local file paths.
-
-If any of the 3 vars is missing, fall back to local paths: `![alt](qa-screenshots/XX-description.png)`
-
-**Upload command — run ONCE after all screenshots are captured:**
-```bash
-python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py --dir qa-screenshots --pr <PR_NUMBER>
-```
-
-This is the **only permitted upload method**. The script handles all files in the directory in one pass.
-
-> **NEVER** write a for loop, use curl, or write any custom upload code.
-> The script at `~/.claude/skills/xcloud-test/scripts/upload_screenshots.py` handles everything.
-
-Use `--json` flag if you only need the URL mapping as JSON:
-```bash
-python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py --dir qa-screenshots --pr <PR_NUMBER> --json
-```
-
-**In the report, use the Cloudinary URL:**
-```markdown
-![Dashboard smoke test](https://res.cloudinary.com/xxxx/image/upload/v1234/qa-pr1234/01-dashboard-smoke.png)
-```
-
-### Naming Convention
-
-**Naming convention:** `qa-screenshots/XX-description.png`
-- Sequential numbering: `01-`, `02-`, etc.
-- Descriptive suffix: `01-dashboard-smoke-test.png`, `02-free-user-blocked.png`
+**Naming convention:** `<NN>-<descriptor>[-<role>].png`
 - Include role when testing multiple accounts: `07-free-user-upgrade-prompt.png`
-
-**When to capture:**
-- Each major test step (evidence of PASS)
-- Every bug found (before and after)
-- Before/after comparisons for UI changes
-- State transitions (installing → installed)
-- Error messages and validation feedback
-
-**Directory:** Always save to `qa-screenshots/` in the project root.
+- Be specific: `06-php83-installed-badge.png` not `06-result.png`
 
 ### Capturing Evidence, Not Pages
 
-Screenshots are evidence — they must show the **specific element** that proves the bug or fix, not just the general page.
+Screenshots are evidence — they must show the **specific element** that proves the bug or fix.
 
-**Scroll to the evidence first.** If the relevant element (error message, key list, status badge, changed data) is below the viewport, scroll it into view before taking the screenshot:
-```
-browser_evaluate: document.querySelector('.ssh-keys-list').scrollIntoView({behavior: 'instant', block: 'center'})
-browser_take_screenshot → now captures the actual evidence
-```
-
-**Capture at the right moment.** Transient elements like toast notifications auto-dismiss within seconds. Screenshot immediately after the action that triggers them — don't navigate or interact first:
-```
-browser_click → (triggers action)
-browser_take_screenshot → capture toast/success message NOW
-browser_snapshot → then continue testing
+**Scroll to the evidence first** if the relevant element is below the viewport:
+```bash
+playwright-cli evaluate "document.querySelector('.ssh-keys-list').scrollIntoView({behavior:'instant',block:'center'})"
+playwright-cli screenshot --path qa-screenshots/pr<N>/evidence.png
 ```
 
-For state transitions, capture each state separately:
-```
-browser_take_screenshot → 04-php85-before-install.png (shows "Install" button)
-browser_click → click Install
-browser_take_screenshot → 05-php85-installing.png (shows "Installing" status)
-browser_wait_for → wait for completion
-browser_take_screenshot → 06-php85-installed.png (shows "Installed" badge)
+**Capture transient elements immediately** — toasts auto-dismiss within seconds:
+```bash
+playwright-cli click "<submit-ref>"              # triggers action
+playwright-cli screenshot --path <file>          # capture toast NOW — before next action
+playwright-cli snapshot                          # then continue
 ```
 
-**Before/after must be visually distinct.** If your "before" and "after" screenshots look identical, you captured the wrong area. The element that changed must be visible in both screenshots. If the change is in a list, table row, or section below the fold — scroll there before each capture.
+**For state transitions, capture each state:**
+```bash
+playwright-cli screenshot --path 04-php83-before-install.png   # shows Install button
+playwright-cli click "<install-ref>"
+playwright-cli screenshot --path 05-php83-installing.png        # shows Installing status
+playwright-cli wait-for-text "Installed"
+playwright-cli screenshot --path 06-php83-installed.png         # shows Installed badge
+```
 
-**Bad example:** Two screenshots of the top of a page — SSH key list (the bug) is cut off below the viewport in both.
-**Good example:** Both screenshots scrolled to the SSH key list — "before" shows unfiltered keys, "after" shows filtered keys.
+## Waiting & Timing
 
-## Waiting & Timing — Which Tool to Use
+| Situation | Command |
+|-----------|---------|
+| Page navigation (URL change) | `playwright-cli wait-for-text "<heading on new page>"` |
+| Inertia transition (no full reload) | `playwright-cli wait-for-text "<expected text>"` |
+| Async operation (install, deploy) | `playwright-cli wait-for-text "Installed"` (or expected completion text) |
+| Need fresh element refs after DOM change | `playwright-cli snapshot` |
+| Element below viewport | `playwright-cli evaluate "document.querySelector(…).scrollIntoView(…)"` |
 
-Choosing the wrong wait strategy is the most common source of flaky interactions. Use this table:
+**Key rule:** After every interaction that changes the DOM, run `playwright-cli snapshot` before the next interaction. Refs from a prior snapshot are stale and will fail.
 
-| Situation | Tool | Example |
-|-----------|------|---------|
-| Page navigation (full URL change) | `browser_wait_for` with URL | After clicking a nav link, wait for URL to contain `/dashboard` |
-| Inertia page transition (no full reload) | `browser_wait_for` with text | After Inertia visit, wait for expected heading text to appear |
-| Action completes with toast/message | `browser_take_screenshot` immediately | After clicking Submit, screenshot NOW before toast auto-dismisses |
-| Element below viewport needs capturing | `browser_evaluate` scroll, then screenshot | `document.querySelector('.target').scrollIntoView({block:'center'})` |
-| Need to interact with new DOM elements | `browser_snapshot` | After any DOM mutation, re-snapshot to get fresh refs |
-| Async operation (install, deploy) | `browser_wait_for` with text + polling | Wait for status text to change from "Installing" to "Installed" |
-| Page seems stuck or loading | `browser_wait_for` with network idle | Wait for all network requests to settle |
-| Modal/dialog needs to open fully | `browser_snapshot` after a beat | Trigger the modal, then snapshot to get modal element refs |
-
-**Key rule:** After every interaction that changes the DOM, you need a fresh `browser_snapshot` before the next interaction. Refs from the old snapshot are stale and will fail.
-
-**Common mistake:** Using `browser_wait_for` when you should just `browser_snapshot`. If the page has already changed (you can tell because the interaction succeeded), just snapshot — don't wait for something that already happened.
-
-## Error Detection Workflow
+## Error Detection
 
 ### After Every Page Load
-1. Run `browser_console_messages` to check for JavaScript errors
-2. Run `browser_network_requests` to check for failed API calls (4xx, 5xx)
+```bash
+playwright-cli snapshot    # check YAML output for error text, alert banners, or validation messages
+```
 
-### Known Pre-Existing Errors (Filter These Out)
-These are known issues unrelated to any PR — do not report them as bugs:
+### Known Pre-Existing Errors (Do Not Report)
 - DuckDuckGo favicon 404 (`icons.duckduckgo.com`)
 - WordPress.org plugin icon 404s (`ps.w.org`)
 - ngrok CSP font-related errors (when using ngrok tunnels)
 
-### Investigating Errors
-- **Console error with stack trace:** Note the file and line number, cross-reference with the PR diff
-- **Network 500 error:** Check server logs via SSH (`tail -n 200 {app-path}/storage/logs/laravel-$(date +%Y-%m-%d).log`)
-- **Network 422 error:** Validation failure — check the response body for field-specific errors
-
 ## Form Testing Patterns
 
-| Input Type | Tool | Notes |
-|-----------|------|-------|
-| Text input | `browser_fill_form` | Clears existing value and types new one |
-| Password | `browser_fill_form` | Same as text input |
-| Checkbox | `browser_click` | Click the checkbox ref to toggle |
-| Toggle/Switch | `browser_click` | Click the switch ref |
-| Select/Dropdown | `browser_select_option` | Pass the option value |
-| File upload | `browser_file_upload` | Provide file path |
-| Textarea | `browser_fill_form` | Same as text input |
-| Search/autocomplete | `browser_type` | Type character by character to trigger suggestions |
+| Input Type | Command |
+|------------|---------|
+| Text input | `playwright-cli fill "<selector>" "<value>"` |
+| Password | `playwright-cli fill "[name=password]" "<value>"` |
+| Checkbox | `playwright-cli click "<checkbox-ref>"` |
+| Toggle/Switch | `playwright-cli click "<switch-ref>"` |
+| Select/Dropdown | `playwright-cli select "<selector>" "<option-value>"` |
+| Textarea | `playwright-cli fill "<selector>" "<value>"` |
+| Search/autocomplete | `playwright-cli fill "<selector>" "<partial-text>"` then snapshot to find suggestion refs |
 
 ### Validation Testing
-1. Submit form with empty required fields — verify error messages appear
-2. Submit with invalid formats (email, URL) — verify specific error text
-3. Submit with boundary values (max length, special characters)
-4. After fixing errors, verify error messages clear on resubmission
+1. Submit form with empty required fields — snapshot to verify error messages appear in YAML
+2. Submit with invalid formats — snapshot to verify specific error text
+3. Submit at boundary values (max length, special characters)
+4. After fixing errors, re-submit and verify error messages are gone
 
 ## Debugging Common Issues
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| "ref not found" error | Stale refs from old snapshot | Take a new `browser_snapshot` |
-| Can't click element | Element behind overlay/modal | Dismiss the overlay first, re-snapshot |
-| Page seems stuck | Inertia request in flight | Use `browser_wait_for` with URL or text |
-| Login redirects to unexpected page | Session timeout or billing redirect | Check URL, may need `force.payment` middleware redirect |
+| Ref not found | Stale ref from old snapshot | Run `playwright-cli snapshot` and use new ref |
+| Can't click element | Element behind modal or overlay | Dismiss the overlay, then re-snapshot |
+| Page seems stuck | Inertia request in flight | `playwright-cli wait-for-text "<expected>"` |
+| Login redirects unexpectedly | Billing redirect or session issue | Check snapshot for redirect destination |
 | Form submit doesn't respond | CSRF token expired | Close browser, start fresh session |
-| Elements missing from snapshot | Page not fully loaded | Use `browser_wait_for` with expected text |
-| Screenshot is blank/partial | Page still rendering | Add `browser_wait_for` before screenshot |
+| Toast captured blank | Screenshot taken too late | Screenshot immediately after the action, before next interaction |

@@ -1287,7 +1287,7 @@ No `qa-browser.lock` file, no timeout, no serialization — parallel journey age
 | Phase 5A checkpoint overwrites blv_findings / security_findings | Checkpoint MERGES into existing file — never full-overwrite; existing keys take priority |
 | Re-running skill on same PR without warning | Phase 5A checks for existing results and asks "overwrite or abort" before writing |
 | Cloudinary upload done but report still uses local paths | After upload exits 0, write cloudinary_url back into screenshots[] in qa-test-progress.json |
-| Leaving browser open after journey | Call browser_close after every journey — even FAIL/BLOCKED |
+| Leaving browser open after journey | Run `playwright-cli close && pkill -f chromium 2>/dev/null || true` after every journey — even FAIL/BLOCKED |
 | Treating UI toast as server-side proof | Run Command Runner verification, screenshot the output |
 | Creating seed data during testing | Seed data is created in Phase 2 — before any browser opens |
 | Journeys without variants | Every journey needs at least one variant (blocked user or different role) |
