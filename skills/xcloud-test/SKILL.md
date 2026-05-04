@@ -406,6 +406,7 @@ For each changed feature or UI page found in Phase 0, generate journeys covering
 | **Stack variant** | Same journey repeated on a different server stack | PR modifies stack-specific code |
 | **State variant** | Same journey on a server/site in a different state | PR behavior changes based on existing state |
 | **First-time user** | Actor has zero prior knowledge of this feature. Journey includes explicit **observe** steps before any interaction: snapshot the page and note what a new user would read, assume, or misunderstand before clicking anything. Expected outcome must include "user can understand what happened without reading docs". | PR touches any UI file (flag c from Phase 0 analysis) |
+| **Adversarial** | Systematically probes the cases the happy path skips: boundary values, invalid inputs, double-actions, interrupted flows, and stale data. Each adversarial journey targets one specific failure mode. | Any PR touching a form, async operation, or live-state display |
 
 > **Regression journey scope:** Start the journey from the **consumer's own entry point** — not from the action that creates the state. Assume the primary feature (already tested in the happy-path journey) worked correctly. Pre-set seed data to the post-action state so the regression journey only exercises the consumer's UI or behavior, without repeating the primary feature's steps.
 
@@ -416,14 +417,17 @@ For each changed feature or UI page found in Phase 0, generate journeys covering
 - If the PR modifies a migration → add a journey testing behavior on pre-existing data (not just fresh schema)
 - If Phase 0 analysis raised a security flag (IDOR risk) → add an IDOR journey: paid account attempts to access a resource owned by a different team; expected outcome is 403 or redirect, not the resource
 - If Phase 0 analysis flagged UI files (flag c) → add one **first-time user** journey per changed feature page. For each HLT finding written to `qa-test-progress.json`, add an explicit verification step to the first-time user journey that tests whether the issue is real on staging (e.g. if HLT flagged a generic error message, trigger the error in the journey and screenshot the actual message)
+- For every **form or user input** in the changed files → add two adversarial journeys: (1) **boundary-value** — submit with a value exactly at the plan/server limit, one over the limit, and zero/empty; (2) **invalid-input** — submit with special characters, an XSS-like string (`<script>alert(1)</script>`), and an excessively long value (500+ characters). Verify the UI shows a clear, specific error rather than crashing or silently accepting.
+- For every **async operation** (button that triggers a server-side action: install, migrate, deploy, delete) → add two adversarial journeys: (1) **double-submit** — click the trigger button twice rapidly before the first response returns; verify no duplicate operation or UI deadlock; (2) **interrupted flow** — navigate away or close the modal while the operation is in progress; verify the server either completes cleanly or rolls back, and the UI reflects the correct final state when revisited.
+- For every **page that displays live state** (status badge, resource list, counts) → add one **stale-data** adversarial journey: open the page, trigger a relevant state change via another action (Tinker or a separate tab), return to the original page without a full reload, and verify the displayed state is current — not stale from the initial load.
 
 **Minimum journey counts:**
 
 | PR Scope | Minimum Journeys (including variants) |
 |---|---|
-| Small (1–3 files) | 3 |
-| Medium (4–10 files) | 6 |
-| Large (10+ files) | 10 |
+| Small (1–3 files) | 4 |
+| Medium (4–10 files) | 8 |
+| Large (10+ files) | 12 |
 
 ### 1.3 Present & Confirm
 
@@ -1292,6 +1296,7 @@ No `qa-browser.lock` file, no timeout, no serialization — parallel journey age
 | Confirming journeys without checking feature map | Cross-reference `xcloud-feature-map.md` to catch missing UI pages |
 | Reading code instead of testing | Log in, perform the action, screenshot the result. Code reading = review, not QA. |
 | "Verified by reviewing the diff" as evidence | Trigger the actual scenario on staging and observe the result |
+| Skipping adversarial journeys for forms and async buttons | Every form gets a boundary-value + invalid-input journey; every async action button gets a double-submit + interrupted-flow journey — these are required, not optional |
 | Skipping HLT agent for UI PRs | Any PR with Vue/Blade changes gets the HLT agent — it runs in background, costs little, and catches critical UX failures before users hit them |
 | Skipping i18n agent when strings changed | Any PR adding/modifying user-facing strings gets the i18n agent — hardcoded strings and missing keys break non-English users silently |
 | Starting cleanup before reassessment returns clean | Step 7.3 is a hard gate — cleanup must not run while gaps exist in the report |
