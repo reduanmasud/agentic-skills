@@ -199,6 +199,41 @@ For each logic flaw:
 - **Medium:** Feature that mostly works but misses edge cases the domain requires, missing configuration for hardcoded values
 - **Low:** Minor deviation from industry norm with low user impact
 
+### Section 5.6: Human Logic Findings
+
+Pull from `qa-test-progress.json → hlt_findings`. Group by lens. Each finding must be confirmed or ruled out by staging evidence (screenshots from first-time-user journeys). If `hlt_findings` is empty AND no first-time-user journeys exist, write "No human logic issues identified" and list which lenses were checked.
+
+```
+## Human Logic Findings
+
+### Expectation
+
+#### HLT-001: {Descriptive Title}
+
+**Severity:** Critical / High / Medium / Low
+**Lens:** Expectation / Feedback / Error Intelligibility / Reversibility / Consistency
+**Location:** `ComponentName.vue` line N  (or route `/path`)
+
+**Observed on staging:** {What the UI actually shows — screenshot embedded below}
+
+![{alt text describing what is shown}]({cloudinary_url or local path})
+
+**User expectation:** {What a first-time user would assume this does}
+
+**Actual behavior:** {What it actually does — confirmed by the first-time-user journey}
+
+**Impact:** {Why this matters — data loss risk / support cost / user abandonment}
+
+**Recommendation:** {Specific, actionable fix — exact copy change, interaction change, or component change}
+**Effort:** Low (copy only) / Medium (component change) / High (flow redesign)
+```
+
+**Severity guidelines for human logic findings:**
+- **Critical:** User can trigger an unintended destructive action, or is completely stuck with no recovery path
+- **High:** User will likely misunderstand the feature or require support to complete a basic task
+- **Medium:** Confusing but recoverable; user figures it out after a moment
+- **Low:** Minor polish inconsistency; low user impact
+
 ### Section 6: Observations (Pre-existing Issues)
 
 Document pre-existing issues separately from PR bugs. If none, write "No pre-existing issues observed."
@@ -281,7 +316,7 @@ If FAIL, include a checklist of items that must be fixed before merge:
 
 Before saving the report, verify every item below. If any item fails, go back and fix the report.
 
-- [ ] **All 13 sections present** — Title, PR Summary, Test Environment, Tests Performed, Bugs Found, Observations, Regression Issues, Performance Observations, Security Concerns, Areas Not Fully Tested, Screenshots, Test Data Cleanup, Final Verdict
+- [ ] **All 14 sections present** — Title, PR Summary, Test Environment, Tests Performed, Bugs Found, Logic Flaws (5.5), Human Logic Findings (5.6), Observations, Regression Issues, Performance Observations, Security Concerns, Areas Not Fully Tested, Screenshots, Test Data Cleanup, Final Verdict
 - [ ] **Every screenshot embedded with `![alt](path)`** — search the report for any bare filenames like `qa-screenshots/...` that aren't inside `![]()`
 - [ ] **Every bug has all required fields** — Severity, Summary, Root Cause (file + line), Steps to Reproduce, Tool used, Expected Result, Actual Result, embedded Screenshot
 - [ ] **Every bug has a root cause** — file path and line number, not just "something is wrong"
@@ -291,6 +326,8 @@ Before saving the report, verify every item below. If any item fails, go back an
 - [ ] **Cleanup table is filled** — either cleanup records or "No test data was created"
 - [ ] **Final verdict has reasoning** — not just "PASS" but why, referencing specific findings
 - [ ] **Logic flaws reported if applicable** — if Phase 0 BLV + Security agent wrote `blv_findings`, their results appear in the test case tables and any confirmed flaws are reported in Section 5.5 (Logic Flaws)
+- [ ] **Human logic findings reported** — if Phase 0 HLT agent wrote `hlt_findings`, Section 5.6 is present with findings grouped by lens; each finding has staging evidence from a first-time-user journey screenshot
+- [ ] **UX Improvement Recommendations section present** — if PR touched UI files, the "## UX Improvement Recommendations" section is in the report with at least one entry or explicit "none found" with lens coverage explanation
 
 ---
 

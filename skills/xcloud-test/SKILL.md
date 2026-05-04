@@ -100,7 +100,7 @@ Agent(
      - All cross-feature consumers found
      - PR summary: what / why / how (3 sentences max)
      - Stack scope: which stacks (nginx/openlitespeed/docker_nginx/openclaw) are affected
-     - Flags: (a) does PR touch billing/thresholds/limits/permissions? (b) does PR touch Policies/middleware/auth/API endpoints?"
+     - Flags: (a) does PR touch billing/thresholds/limits/permissions? (b) does PR touch Policies/middleware/auth/API endpoints? (c) does PR touch any UI files (*.vue, *.blade.php, front-end JS/CSS, Inertia pages)?"
 )
 ```
 
@@ -137,6 +137,88 @@ Agent(
 ```
 
 Skip this agent entirely for PRs where analysis flagged neither (a) nor (b).
+
+**Human Logic Test (HLT) agent** — spawn immediately after the analysis agent returns, **only if** it flagged (c) UI files. Runs in background alongside BLV+Security. Wait for it before sending Phase 3 questions.
+
+```
+Agent(
+  run_in_background=true,
+  description="Human Logic Test for PR #<N>",
+  prompt="Apply human logic and UX analysis to PR #<N>.
+
+  Input — paste the changed files list and UI pages from the analysis agent output:
+  [paste analysis output here]
+
+  Read every changed *.vue, *.blade.php, and front-end JS file in full.
+  Apply all 5 lenses below. Each lens targets a different class of critical UX failure.
+
+  LENS 1 — EXPECTATION
+  For every UI element in the changed files (button, toggle, status badge, form field, link):
+  - What does a first-time user assume this does based on its label, icon, and position?
+  - Does the actual behavior match that assumption?
+  Flag every mismatch: e.g. a button labelled 'Apply' that saves permanently, a badge that
+  says 'Active' when the underlying resource is still provisioning, a toggle that triggers
+  an irreversible action without looking destructive.
+
+  LENS 2 — FEEDBACK
+  For every user-triggered action in the changed UI (click, submit, toggle, delete):
+  - Is there a loading/processing indicator while the server responds?
+  - Is there a distinct success state the user can see?
+  - Is there a distinct failure state?
+  Flag any action that could leave the user uncertain whether it worked, particularly
+  long-running server operations (installs, migrations, deployments) with no visible progress.
+
+  LENS 3 — ERROR INTELLIGIBILITY
+  For every error message, validation message, toast, or empty state in the changed code:
+  - Does it name specifically what went wrong? ('Port must be between 1 and 65535' vs 'Invalid input')
+  - Does it tell the user what to do next?
+  Flag all generic strings: 'Something went wrong', 'Operation failed', 'Error occurred',
+  'Please try again' with no context. These are HIGH severity — users cannot self-serve.
+
+  LENS 4 — REVERSIBILITY
+  For every destructive or significant action (delete, uninstall, disable, transfer, reset):
+  - Is there a confirmation dialog that names exactly what will be deleted or changed?
+  - Is the consequence permanent or reversible?
+  Flag destructive actions with no confirmation, or confirmations with generic copy
+  ('Are you sure?' without naming the resource). Also flag permanent actions presented
+  casually without indicating permanence.
+
+  LENS 5 — CONSISTENCY
+  Compare the changed UI against the rest of xCloud (use your knowledge of the platform):
+  - Does this feature use the same button placement, copy style, and feedback pattern
+    as similar features (e.g. PHP management, site creation, backup flows)?
+  - Does it follow xCloud's existing terminology and interaction patterns?
+  Flag inconsistencies that would confuse users familiar with other parts of the app,
+  or flows that contradict established patterns without obvious reason.
+
+  Write ALL findings to qa-test-progress.json immediately:
+  {
+    'hlt_findings': [
+      {
+        'lens': 'expectation | feedback | error_intelligibility | reversibility | consistency',
+        'title': '...',
+        'severity': 'critical | high | medium | low',
+        'location': 'ComponentName.vue line N or route /path',
+        'observed': '...',
+        'expected': '...',
+        'recommendation': '...'
+      }
+    ]
+  }
+  Use an empty array if no issues found (do not skip the key).
+
+  Severity guide:
+  - critical: user can lose data, perform an unintended destructive action, or be
+    completely stuck with no way forward
+  - high: user will likely misunderstand the feature or need support to proceed
+  - medium: confusing but recoverable; user will figure it out after a moment
+  - low: polish issue; minor inconsistency with low user impact
+
+  Return a ≤ 100-word summary. Full details are in qa-test-progress.json."
+)
+```
+
+Skip this agent entirely for PRs where analysis flagged (c) as false (no UI files changed).
 
 **Deploy agent**:
 
@@ -255,6 +337,7 @@ For each changed feature or UI page found in Phase 0, generate journeys covering
 | **Regression** | A cross-feature consumer still works correctly | For each consumer found in Phase 0 analysis |
 | **Stack variant** | Same journey repeated on a different server stack | PR modifies stack-specific code |
 | **State variant** | Same journey on a server/site in a different state | PR behavior changes based on existing state |
+| **First-time user** | Actor has zero prior knowledge of this feature. Journey includes explicit **observe** steps before any interaction: snapshot the page and note what a new user would read, assume, or misunderstand before clicking anything. Expected outcome must include "user can understand what happened without reading docs". | PR touches any UI file (flag c from Phase 0 analysis) |
 
 > **Regression journey scope:** Start the journey from the **consumer's own entry point** — not from the action that creates the state. Assume the primary feature (already tested in the happy-path journey) worked correctly. Pre-set seed data to the post-action state so the regression journey only exercises the consumer's UI or behavior, without repeating the primary feature's steps.
 
@@ -264,6 +347,7 @@ For each changed feature or UI page found in Phase 0, generate journeys covering
 - If the PR is in stack-specific code but calls a shared service → add OLS/Docker variants and flag for clarification in Phase 3
 - If the PR modifies a migration → add a journey testing behavior on pre-existing data (not just fresh schema)
 - If Phase 0 analysis raised a security flag (IDOR risk) → add an IDOR journey: paid account attempts to access a resource owned by a different team; expected outcome is 403 or redirect, not the resource
+- If Phase 0 analysis flagged UI files (flag c) → add one **first-time user** journey per changed feature page. For each HLT finding written to `qa-test-progress.json`, add an explicit verification step to the first-time user journey that tests whether the issue is real on staging (e.g. if HLT flagged a generic error message, trigger the error in the journey and screenshot the actual message)
 
 **Minimum journey counts:**
 
@@ -559,6 +643,7 @@ Merge this structure into `qa-test-progress.json`. For each key, only set it if 
   "screenshots": [],
   "blv_findings": [],
   "security_findings": [],
+  "hlt_findings": [],
   "summary": {"pass": 0, "fail": 0, "blocked": 0}
 }
 ```
@@ -904,31 +989,54 @@ Agent(
         — do NOT write just "No security concerns found" without explanation
   8. Section 5.5 — Logic Flaws: pull qa-test-progress.json → blv_findings array
      and write each finding using the Logic Flaw format from report-template.md
-  9. Write report to QA-Report-PR-<N>.md
-  10. Run post-report validation checklist from report-template.md
-  11. Return: file path, journey count, PASS count, FAIL count, security findings count,
-      validation failures"
+  9. Section 5.6 — Human Logic Findings: pull qa-test-progress.json → hlt_findings array.
+     For each finding, write it using the Human Logic format from report-template.md.
+     Group by lens (Expectation, Feedback, Error Intelligibility, Reversibility, Consistency).
+     If hlt_findings is empty AND no first-time-user journeys exist: write
+     'No human logic issues identified. [state which lenses were checked and why no issues found]'
+     — do NOT write just 'None' without explaining what was checked.
+  10. Write report to QA-Report-PR-<N>.md
+  11. Run post-report validation checklist from report-template.md
+  12. Return: file path, journey count, PASS count, FAIL count, security findings count,
+      hlt findings count, validation failures"
 )
 ```
 
-### Optional: UX Critique (spawn in same message as report agent)
+### UX Improvement Recommendations (mandatory for UI PRs — spawn in same message as report agent)
 
-If the PR includes UI changes, spawn a background agent alongside report writing:
+If the PR includes UI changes (flag c from Phase 0), spawn this agent. Skip only for backend-only PRs.
 
 ```
 Agent(
   run_in_background=true,
-  description="UX critique for PR #<N>",
-  prompt="Review the UI changes in PR #<N> from a UX and competitive perspective.
-  Read qa-test-progress.json for screenshot paths and journey outcomes.
-  Focus on: interaction clarity, error message quality, consistency with the rest of xCloud UI,
-  and any obvious UX regressions introduced by this PR.
-  Keep findings to ≤ 5 bullet points.
-  Append findings to QA-Report-PR-<N>.md under a '## UX Observations' section."
+  description="UX improvement recommendations for PR #<N>",
+  prompt="Write actionable UX improvement recommendations for PR #<N>.
+
+  1. Read qa-test-progress.json completely:
+     - hlt_findings array: pre-analysis findings from the HLT agent (Phase 0)
+     - journeys dict: look at every first-time-user journey result — PASS/FAIL/BLOCKED
+       and the observation notes from each step
+     - screenshots array: look at the actual UI screenshots from staging
+  2. For each confirmed hlt_finding (severity critical or high):
+     Write a concrete improvement recommendation:
+     - What the current UI does
+     - Why it confuses or risks harm for the user
+     - Specific fix: exact copy change, interaction pattern, or component change
+     - Effort estimate: low (copy change only) | medium (component change) | high (flow redesign)
+  3. For each first-time-user journey that returned FAIL or BLOCKED:
+     Write a recommendation explaining what the user encountered and what should change.
+  4. Spot-check the screenshots: look for loading states, empty states, error states.
+     Flag any screenshot where the UI gives the user no clear signal about what happened.
+  5. Format as a prioritized list — critical/high first, then medium, then low.
+     Maximum 8 recommendations. Each must be specific and actionable, not generic.
+  6. Append to QA-Report-PR-<N>.md under a section:
+     ## UX Improvement Recommendations
+     ### Critical / High Priority
+     ### Medium Priority
+     ### Low Priority (Polish)
+  7. Return: count of recommendations by severity"
 )
 ```
-
-Omit entirely for backend-only PRs (no Vue/template changes).
 
 ### Cleanup
 
@@ -1060,6 +1168,10 @@ Each journey agent acquires the lock before its first `browser_navigate` and rel
 | Confirming journeys without checking feature map | Cross-reference `xcloud-feature-map.md` to catch missing UI pages |
 | Reading code instead of testing | Log in, perform the action, screenshot the result. Code reading = review, not QA. |
 | "Verified by reviewing the diff" as evidence | Trigger the actual scenario on staging and observe the result |
+| Skipping HLT agent for UI PRs | Any PR with Vue/Blade changes gets the HLT agent — it runs in background, costs little, and catches critical UX failures before users hit them |
+| First-time user journey skips "observe" steps | These steps are mandatory — snapshot the page and note what a new user reads before any click, not just what happens after |
+| HLT finding not verified on staging | Every critical/high HLT finding must have a screenshot from a first-time-user journey proving it exists on staging — not just "code says so" |
+| Writing "No human logic issues" without checking all 5 lenses | Section 5.6 must name each lens and state why it found nothing — a blank "none" is always wrong |
 
 ---
 
