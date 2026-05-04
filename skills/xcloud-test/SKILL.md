@@ -779,7 +779,8 @@ Agent(
      - playwright-cli screenshot --path qa-screenshots/pr<N>/server-verify.png — server-side evidence
   8. Close browser at the end of this group (MANDATORY — even on FAIL or BLOCKED):
      playwright-cli close
-     If this agent handles multiple journeys (a group), call playwright-cli close after each
+     pkill -f chromium 2>/dev/null || true    # force-kill residual browser process if close didn't terminate it
+     If this agent handles multiple journeys (a group), run both commands after each
      journey and before navigating to the next journey's entry point.
 
   IMPORTANT — Do NOT write directly to qa-test-progress.json (concurrent agents will corrupt it).
@@ -1248,7 +1249,7 @@ playwright-cli command reference:
 | `playwright-cli fill "<selector>" "<value>"` | Fill an input field |
 | `playwright-cli select "<selector>" "<value>"` | Choose a dropdown option |
 | `playwright-cli screenshot --path <file>` | Save screenshot to disk |
-| `playwright-cli close` | Close browser — MANDATORY at end of every journey |
+| `playwright-cli close && pkill -f chromium 2>/dev/null \|\| true` | Close browser — MANDATORY at end of every journey; pkill ensures the process is gone |
 
 Element refs (e.g. `e21`) are ephemeral — always re-snapshot after any DOM mutation before the next interaction.
 
@@ -1281,6 +1282,7 @@ No `qa-browser.lock` file, no timeout, no serialization — parallel journey age
 | Security findings lost after BLV agent returns | BLV+security agent writes to qa-test-progress.json — report reads from there |
 | Journey agents writing qa-test-progress.json concurrently | Agents write per-journey sidecar files (qa-test-progress.J-001.json); main session merges after each batch |
 | Using MCP browser tools instead of playwright-cli | All browser interactions in journey agents use playwright-cli via Bash — not mcp__plugin_playwright |
+| Browser window left open after journey | `playwright-cli close` ends the session but may leave the Chromium process running — always follow it with `pkill -f chromium 2>/dev/null \|\| true` |
 | Reading screenshot files into context to verify UI state | Screenshots are on disk; avoid reading them inline — use playwright-cli snapshot YAML to determine state |
 | Phase 5A checkpoint overwrites blv_findings / security_findings | Checkpoint MERGES into existing file — never full-overwrite; existing keys take priority |
 | Re-running skill on same PR without warning | Phase 5A checks for existing results and asks "overwrite or abort" before writing |
