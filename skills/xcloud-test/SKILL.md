@@ -25,10 +25,9 @@ Each PR follows an eight-phase workflow:
 Create tasks immediately at session start — before anything else:
 
 ```
-TaskCreate: "Phase 0.1: PR intake + analysis"
-TaskCreate: "Phase 0.4: Scenario enumeration"
-TaskCreate: "Phase 0.2: Gather staging environment (informed by Phase 0.4)"
-TaskCreate: "Phase 0: Deploy (after environment provided)"
+TaskCreate: "Phase 0: PR intake + analysis"
+TaskCreate: "Phase 0.4: Scenario enumeration + environment confirmation"
+TaskCreate: "Phase 0: Deploy (after Phase 0.4 confirmed)"
 TaskCreate: "Phase 1: Journey mapping"
 TaskCreate: "Phase 2: Seed data generation"
 TaskCreate: "Phase 3: Adaptive knowledge gathering"
@@ -60,13 +59,20 @@ gh pr view <PR_NUMBER> --json number,title,headRefName,state \
 
 If the PR is **not found**, notify the user and stop. If the PR is **MERGED**, continue — testing a merged PR on staging is valid (the deploy agent will warn about the merged branch and deploy the head commit). If the PR is **CLOSED** (rejected/abandoned, not merged), warn the user and ask whether to continue or stop. For multiple PRs, ask two questions: (1) **parallel or sequential?** and (2) **same staging server or separate servers?** These determine how environment info is gathered and whether cleanup must run between PRs. See `references/environment-setup.md` → "Environment Setup Modes" for the full handling matrix.
 
-### 0.2 → moved
+### 0.2 Gather Staging Environment
 
-Environment gathering is deferred to after Phase 0.4. Analysis only needs the PR number — no staging credentials required.
+Ask for these details before spawning any agents. Do NOT assume or hardcode values:
+
+- Staging URL
+- SSH access (`user@host`)
+- App path on server
+- Paid test account (email / password)
+- Free test account (email / password)
+- Whitelabel URL (if the PR touches whitelabel features)
 
 ### 0.3 Pipelined Analysis
 
-Spawn the analysis agent immediately after 0.1 — no environment info needed yet. Deployment is deferred until Phase 0.4 scenarios are confirmed and Phase 0.2 environment info is collected.
+**Do not spawn the deploy agent yet.** Deployment is deferred until Phase 0.4 scenario confirmation — this ensures you know exactly which environments are needed before any branch is checked out.
 
 Spawn the analysis agent (and any background agents triggered by its flags):
 
@@ -481,42 +487,9 @@ Review QA-Scenarios-PR-<N>.md, then reply:
   "update SC-X: <change>"   — modify a scenario
 ```
 
-**Wait for tester confirmation before proceeding.**
+**Collect any missing environment info before accepting "confirmed".** Update `qa-test-progress.json["env"]` with anything new provided here. **Wait for confirmation before spawning the deploy agent.**
 
----
-
-### 0.2 Gather Staging Environment
-
-After the tester confirms (or edits) the scenario list, ask for environment details — **only what Phase 0.4 says is needed.** Do not ask for items marked `No` in the environment requirements table.
-
-**Always required:**
-- Staging URL
-- SSH access (`user@host`)
-- App path on server
-
-**Ask only if Phase 0.4 requires it:**
-- Paid test account (email / password) — if `paid_account: true` in any scenario
-- Free test account (email / password) — if `free_account: true` in any scenario
-- Whitelabel URL — if `whitelabel: true` in any scenario (name which scenarios need it)
-- Any special pre-existing state — if `special_state` is non-null in any scenario
-- Any external mock setup — if `external_mock` is non-null in any scenario
-
-Present requirements clearly so the user knows what's needed and why:
-
-```
-Environment needed for PR #<N>:
-  ✓ Staging URL, SSH, app path (always required)
-  ✓ Paid account       — SC-001, SC-003, SC-005
-  ✓ Free account       — SC-002
-  ✗ Whitelabel URL     — not required for this PR
-  ✓ Special state      — server with existing resize billing record (SC-006)
-
-Please provide the above.
-```
-
-Do NOT assume or hardcode any values. Update `qa-test-progress.json["env"]` with everything provided here. **Wait for all required info before spawning the deploy agent.**
-
-### Deploy (after environment provided)
+### Deploy (after confirmation)
 
 Once confirmed, spawn the deploy agent:
 
@@ -1547,14 +1520,12 @@ No `qa-browser.lock` file, no timeout, no serialization — parallel journey age
 Print a one-line status at every phase boundary and every journey result. Never go more than 60 seconds without output.
 
 ```
-[Phase 0.1] PR #<N> validated — <N> files, <N> UI pages affected
-[Phase 0.3] Analysis agent spawned (no environment needed yet)
-[Phase 0.3] Analysis complete — <N> files changed, background agents: <list or 'none'>
+[Phase 0] PR #<N> validated — <N> files, <N> UI pages affected
+[Phase 0] Analysis agent spawned (deploy deferred to Phase 0.4)
+[Phase 0] Analysis complete — <N> files changed, background agents: <list or 'none'>
 [Phase 0.4] Scenarios: <N> critical, <N> high, <N> medium/low — QA-Scenarios-PR-<N>.md written
 [Phase 0.4] Waiting for tester confirmation...
-[Phase 0.4] Scenarios confirmed
-[Phase 0.2] Collecting environment: <list what's needed>
-[Phase 0.2] Environment ready — deploying
+[Phase 0.4] Scenarios confirmed — deploying
 [Phase 0] Deploy confirmed — branch <name>, commit <hash>
 [Phase 1] Generated <N> journeys (<N> variants) — waiting for confirmation
 [Phase 1] Journeys confirmed
