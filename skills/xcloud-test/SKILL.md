@@ -25,9 +25,7 @@ Each PR follows an eight-phase workflow:
 Create tasks immediately at session start — before anything else:
 
 ```
-TaskCreate: "Phase 0: PR intake + analysis"
-TaskCreate: "Phase 0.4: Scenario enumeration + environment confirmation"
-TaskCreate: "Phase 0: Deploy (after Phase 0.4 confirmed)"
+TaskCreate: "Phase 0: PR intake + analysis + deploy (parallel)"
 TaskCreate: "Phase 1: Journey mapping"
 TaskCreate: "Phase 2: Seed data generation"
 TaskCreate: "Phase 3: Adaptive knowledge gathering"
@@ -70,11 +68,9 @@ Ask for these details before spawning any agents. Do NOT assume or hardcode valu
 - Free test account (email / password)
 - Whitelabel URL (if the PR touches whitelabel features)
 
-### 0.3 Pipelined Analysis
+### 0.3 Pipelined Analysis + Deployment
 
-**Do not spawn the deploy agent yet.** Deployment is deferred until Phase 0.4 scenario confirmation — this ensures you know exactly which environments are needed before any branch is checked out.
-
-Spawn the analysis agent (and any background agents triggered by its flags):
+Spawn both agents in a **single message** (parallel):
 
 **Analysis agent** (worktree isolation — reads PR code safely without touching main session git state):
 
@@ -292,206 +288,7 @@ Agent(
 
 Skip this agent entirely for PRs where analysis flagged (d) as false (no user-facing string changes).
 
-If analysis fails → report error. Stop this PR.
-If analysis returns but flags no changed files → warn the user and ask whether to continue or stop.
-
-Print after analysis returns:
-```
-[Phase 0] Analysis complete — <N> files changed, <N> UI pages affected
-[Phase 0] Background agents running: <list which of BLV/HLT/i18n were spawned, or 'none'>
-```
-
-Then proceed to **Phase 0.4** (scenario enumeration + environment check) before deploying.
-
----
-
-## Phase 0.4: Critical Scenario Enumeration
-
-Runs **after analysis returns, before deployment**. Produces `QA-Scenarios-PR-<N>.md` — a tester-readable document listing every test scenario with its environment requirements. The tester reviews and confirms this document before the deploy agent runs.
-
-**Why before deployment:** You may need a whitelabel URL, a specific server stack, or a managed server that isn't provisioned yet. Knowing the full test surface before any branch is checked out prevents wasted deploys and missing setup.
-
-Wait for background agents (BLV, HLT, i18n) to return before spawning this agent — their findings feed scenario completeness.
-
-### Scenario Enumeration Agent
-
-```
-Agent(
-  description="Scenario enumeration for PR #<N>",
-  prompt="Enumerate ALL QA test scenarios for PR #<N>. Do not execute — only plan.
-
-  Input — paste the full analysis agent output plus any BLV/HLT/i18n findings:
-  [paste here]
-
-  STEP 1 — ENUMERATE SCENARIOS
-  Reason from failure modes, not user actions. For every changed function, method,
-  scheduled job, policy, or external call, enumerate independently:
-
-  a) HAPPY PATH — what must succeed end-to-end for the feature to work correctly?
-  b) FAILURE MODES — what can fail at each discrete step? One scenario per failure point.
-     Every external call (Stripe, provider API, Slack, email): what if it returns an error?
-     Every DB write: what if it fails mid-transaction?
-     Every job dispatch: what if the job never runs? runs twice? runs after state changes?
-  c) EDGE CASES — boundary values, zero/empty inputs, pre-existing data, missing metadata,
-     expired tokens, records in unexpected states.
-  d) RESILIENCE — idempotency (safe to call twice?), retry behavior (what state does a retry
-     see?), partial failure compensation (if step N fails, does step N-1 roll back?).
-  e) RACE CONDITIONS — two users/jobs on the same resource simultaneously; a job running
-     after the triggering state has already changed.
-  f) SECURITY — IDOR risks, privilege escalation, auth bypass on any new route or policy.
-  g) ROLLBACK / COMPENSATION — if a multi-step operation fails mid-way, are all prior steps
-     correctly undone? Does billing reverse? Does server state reset?
-
-  For EACH scenario produce this object:
-  {
-    'id': 'SC-001',
-    'title': '<concise action + expected outcome>',
-    'type': 'happy_path | failure_mode | edge_case | resilience | race_condition | security | rollback',
-    'priority': 'critical | high | medium | low',
-    'description': '<what happens and why it matters>',
-    'setup': '<how to reach this state: Tinker command, UI action, mock/stub needed, timing>',
-    'expected': '<what should happen>',
-    'env': {
-      'paid_account': true | false,
-      'free_account': true | false,
-      'whitelabel': true | false,
-      'whitelabel_reason': '...',
-      'stack': 'nginx | openlitespeed | docker_nginx | all | null',
-      'stack_reason': '...',
-      'managed_server': true | false,
-      'managed_server_reason': '...',
-      'special_state': '...',
-      'external_mock': '...'
-    },
-    'test_method': 'browser | tinker | unit_test | manual_ssh | not_testable_on_staging',
-    'unit_test_coverage': 'yes — <TestClass> | no | unknown'
-  }
-
-  Priority guide:
-  - critical: data loss, billing error, security breach, user permanently stuck
-  - high: wrong behavior the user would notice and report
-  - medium: edge case most users won't hit but support will eventually see
-  - low: polish; cosmetic; very unlikely state
-
-  STEP 2 — ENVIRONMENT REQUIREMENTS SUMMARY
-  Aggregate env fields across all scenarios. Produce one checklist:
-  - Accounts needed: paid / free / both
-  - Whitelabel URL: needed? list scenario IDs that require it
-  - Server stacks: nginx / OLS / docker_nginx / all
-  - Managed server: needed? which scenarios?
-  - Special pre-existing states: list each (e.g. 'server with completed resize billing record')
-  - External service mocking: list each (e.g. 'Stripe must return 402 for SC-004')
-  - Missing from Phase 0.2: any required item not yet provided by the user
-
-  STEP 3 — WRITE FILES
-  Write qa-test-progress.json:
-  {
-    'scenarios': [...],
-    'missing_env': ['whitelabel_url: needed for SC-003, SC-007']  // empty array if none
-  }
-
-  Write QA-Scenarios-PR-<N>.md with this exact structure:
-
-  # QA Scenarios — PR #<N>: <title>
-
-  > **Status:** Awaiting tester confirmation
-  > **Generated:** <ISO timestamp>
-  > **Total:** <N> scenarios (<N> critical, <N> high, <N> medium, <N> low)
-
-  ## Environment Requirements
-
-  | Requirement     | Needed | Reason / Scenarios          |
-  |-----------------|--------|-----------------------------|
-  | Paid account    | Yes/No | ...                         |
-  | Free account    | Yes/No | ...                         |
-  | Whitelabel URL  | Yes/No | SC-XXX, SC-XXX              |
-  | Nginx server    | Yes/No | ...                         |
-  | OLS server      | Yes/No | ...                         |
-  | Docker server   | Yes/No | ...                         |
-  | Managed server  | Yes/No | ...                         |
-  | [Special state] | Yes/No | ...                         |
-  | [External mock] | Yes/No | ...                         |
-
-  > ⚠️ **Missing from Phase 0.2:** [list — or 'None, all environment info provided']
-
-  ## Scenario Index
-
-  | ID     | Title | Type | Priority | Test Method | Unit Tests? |
-  |--------|-------|------|----------|-------------|-------------|
-  | SC-001 | ...   | ...  | critical | browser     | no          |
-
-  ## Critical Scenarios
-
-  ### SC-001 — <title>
-  **Type:** happy_path
-  **Priority:** critical
-  **Description:** ...
-  **Setup:** ...
-  **Expected:** ...
-  **Environment:** ...
-  **Test method:** browser
-
-  ---
-
-  ## High Priority Scenarios
-
-  [same format]
-
-  ## Medium / Low Priority Scenarios
-
-  [same format]
-
-  ## Covered by Unit Tests
-
-  Scenarios with existing unit test coverage — staging verification optional for these.
-
-  | ID | Title | Test class |
-  |----|-------|------------|
-  | SC-005 | ... | ResizeBillingTest |
-
-  Return (≤ 150 words):
-  - Scenario counts by type and priority
-  - Environment checklist summary (what is needed, what is missing)
-  - File written: QA-Scenarios-PR-<N>.md"
-)
-```
-
-### Present & Confirm
-
-After the agent returns, print:
-
-```
-[Phase 0.4] Scenarios: <N> critical, <N> high, <N> medium/low
-[Phase 0.4] QA-Scenarios-PR-<N>.md written
-
-─────────────────────────────────────────────────────────────────────
-Environment requirements for PR #<N>:
-  Paid account:    Yes / No
-  Free account:    Yes / No
-  Whitelabel URL:  Yes (SC-003, SC-007) / No
-  Nginx server:    Yes / No
-  OLS server:      Yes / No
-  Docker server:   Yes / No
-  Managed server:  Yes / No
-  Special states:  <list or 'none'>
-  External mocks:  <list or 'none'>
-
-Missing from Phase 0.2 (provide before confirming):
-  <list — or 'none, all environment info already provided'>
-─────────────────────────────────────────────────────────────────────
-
-Review QA-Scenarios-PR-<N>.md, then reply:
-  "confirmed"               — proceed with deployment
-  "remove SC-X"             — drop a scenario
-  "add: <description>"      — add a new scenario
-  "update SC-X: <change>"   — modify a scenario
-```
-
-**Collect any missing environment info before accepting "confirmed".** Update `qa-test-progress.json["env"]` with anything new provided here. **Wait for confirmation before spawning the deploy agent.**
-
-### Deploy (after confirmation)
-
-Once confirmed, spawn the deploy agent:
+**Deploy agent**:
 
 ```
 Agent(
@@ -505,8 +302,8 @@ Agent(
     PR_COMMIT=$(gh pr view <N> --json headRefOid -q '.headRefOid')
     PR_BRANCH=$(gh pr view <N> --json headRefName -q '.headRefName')
   If PR_STATE is 'MERGED' or 'CLOSED':
-    → Print a WARNING: 'PR #<N> is <state>. The branch may no longer exist on remote.
-      Deploying the PR head commit directly. This is the merged code, not the current default branch.'
+    → Print a WARNING: "PR #<N> is <state>. The branch may no longer exist on remote.
+      Deploying the PR's head commit directly. This is the merged code, not the current default branch."
     → Proceed using the head commit hash (FETCH_HEAD), not the branch name.
   Get what is currently on the server:
     DEPLOYED_BRANCH=$(ssh <user>@<host> 'cd <path> && git branch --show-current')
@@ -526,7 +323,7 @@ Agent(
   1. Get branch: gh pr view <N> --json headRefName -q '.headRefName'
   2. SSH to server — stash uncommitted changes first if any exist:
      cd <path>
-     git status --short
+     git status --short  # check for uncommitted changes
      git stash           # only if git status showed changes
      git fetch origin && git checkout <branch> && git pull origin <branch>
   3. Clear caches:
@@ -542,10 +339,12 @@ Agent(
 ```
 
 If deploy fails → report error, stop this PR.
+If analysis fails → report error AND cancel/abandon the deploy agent if it is still running (no further action needed from it). Stop this PR.
+If analysis returns but flags no changed files → warn the user and ask whether to continue or stop.
 
-Print after deploy returns:
+Print when both return:
 ```
-[Phase 0.4] Scenarios confirmed — QA-Scenarios-PR-<N>.md locked
+[Phase 0] Analysis complete — <N> files changed, <N> UI pages affected
 [Phase 0] Deploy confirmed — branch <name>, commit <hash>
 ```
 
@@ -1500,11 +1299,6 @@ No `qa-browser.lock` file, no timeout, no serialization — parallel journey age
 | Reading code instead of testing | Log in, perform the action, screenshot the result. Code reading = review, not QA. |
 | "Verified by reviewing the diff" as evidence | Trigger the actual scenario on staging and observe the result |
 | Skipping adversarial journeys for forms and async buttons | Every form gets a boundary-value + invalid-input journey; every async action button gets a double-submit + interrupted-flow journey — these are required, not optional |
-| Deploying before Phase 0.4 runs | Deployment is deferred until after scenario confirmation — never spawn the deploy agent from Phase 0.3 |
-| Spawning deploy agent without checking missing_env | Phase 0.4 may surface required environments (whitelabel URL, specific stack) not yet provided in Phase 0.2 — collect them before deploying |
-| Treating QA-Scenarios-PR-<N>.md as optional | The scenario document is a hard gate — the tester must confirm it before deployment proceeds |
-| Phase 0.4 running before background agents return | Wait for BLV, HLT, and i18n background agents to return before spawning the scenario enumeration agent — their findings feed scenario completeness |
-| Writing only happy-path and blocked-user scenarios | Phase 0.4 must enumerate failure modes, resilience, race conditions, and rollback — not just UI-path scenarios |
 | Skipping HLT agent for UI PRs | Any PR with Vue/Blade changes gets the HLT agent — it runs in background, costs little, and catches critical UX failures before users hit them |
 | Skipping i18n agent when strings changed | Any PR adding/modifying user-facing strings gets the i18n agent — hardcoded strings and missing keys break non-English users silently |
 | Starting cleanup before reassessment returns clean | Step 7.3 is a hard gate — cleanup must not run while gaps exist in the report |
@@ -1521,11 +1315,7 @@ Print a one-line status at every phase boundary and every journey result. Never 
 
 ```
 [Phase 0] PR #<N> validated — <N> files, <N> UI pages affected
-[Phase 0] Analysis agent spawned (deploy deferred to Phase 0.4)
-[Phase 0] Analysis complete — <N> files changed, background agents: <list or 'none'>
-[Phase 0.4] Scenarios: <N> critical, <N> high, <N> medium/low — QA-Scenarios-PR-<N>.md written
-[Phase 0.4] Waiting for tester confirmation...
-[Phase 0.4] Scenarios confirmed — deploying
+[Phase 0] Analysis + deploy agents spawned in parallel
 [Phase 0] Deploy confirmed — branch <name>, commit <hash>
 [Phase 1] Generated <N> journeys (<N> variants) — waiting for confirmation
 [Phase 1] Journeys confirmed
