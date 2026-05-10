@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-Batch upload QA screenshots to Cloudinary with resume support.
+Batch upload QA screenshots and videos to Cloudinary with resume support.
 
 Usage:
     python3 upload_screenshots.py --dir qa-screenshots --pr 4334
     python3 upload_screenshots.py --dir qa-screenshots --pr 4334 --json
     python3 upload_screenshots.py --dir qa-screenshots --pr 4334 --batch-size 3
     python3 upload_screenshots.py --dir qa-screenshots --pr 4334 --reset
+    python3 upload_screenshots.py --dir qa-videos/pr4334 --pr 4334 --json  # videos
 
 Features:
     - Batched uploads (default 5/batch) with a pause between batches to avoid rate limits
     - Auto-resume: saves state after every upload — re-run to continue from where it stopped
     - Retries each file up to 3 times with increasing delays before marking as failed
     - --reset flag to ignore saved state and re-upload everything
+    - Auto-detects image vs. video by extension — uses correct Cloudinary resource_type
 
 Requires env vars: CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
 """
@@ -28,7 +30,8 @@ import urllib.request
 from pathlib import Path
 
 
-SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".webm", ".mp4"}
+VIDEO_EXTENSIONS     = {".webm", ".mp4", ".mov"}
 MAX_RETRIES = 3
 RETRY_DELAYS = [2, 5, 10]   # seconds between retry attempts
 BATCH_PAUSE = 2.0            # seconds to wait between batches
@@ -111,10 +114,16 @@ def _build_multipart_body(filepath, public_id, boundary):
 
     field("public_id", public_id)
 
-    mime = filepath.suffix.lstrip(".").replace("jpg", "jpeg")
+    ext = filepath.suffix.lower().lstrip(".")
+    if filepath.suffix.lower() in VIDEO_EXTENSIONS:
+        content_type = f"video/{ext}"
+    elif ext == "jpg":
+        content_type = "image/jpeg"
+    else:
+        content_type = f"image/{ext}"
     body += f"--{boundary}\r\n".encode()
     body += f'Content-Disposition: form-data; name="file"; filename="{filepath.name}"\r\n'.encode()
-    body += f"Content-Type: image/{mime}\r\n\r\n".encode()
+    body += f"Content-Type: {content_type}\r\n\r\n".encode()
     body += filepath.read_bytes()
     body += b"\r\n"
     body += f"--{boundary}--\r\n".encode()
@@ -123,12 +132,13 @@ def _build_multipart_body(filepath, public_id, boundary):
 
 def upload_file(filepath, cloud_name, api_key, api_secret, public_id):
     """Upload one file. Returns secure_url string. Raises on failure."""
-    boundary = "----CloudinaryBoundary7654321"
-    body     = _build_multipart_body(filepath, public_id, boundary)
-    creds    = base64.b64encode(f"{api_key}:{api_secret}".encode()).decode()
+    boundary      = "----CloudinaryBoundary7654321"
+    body          = _build_multipart_body(filepath, public_id, boundary)
+    creds         = base64.b64encode(f"{api_key}:{api_secret}".encode()).decode()
+    resource_type = "video" if filepath.suffix.lower() in VIDEO_EXTENSIONS else "image"
 
     req = urllib.request.Request(
-        f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload",
+        f"https://api.cloudinary.com/v1_1/{cloud_name}/{resource_type}/upload",
         data=body,
         headers={
             "Content-Type":  f"multipart/form-data; boundary={boundary}",

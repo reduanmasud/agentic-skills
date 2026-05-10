@@ -57,6 +57,27 @@ gh pr view <PR_NUMBER> --json number,title,headRefName,state \
 
 If the PR is **not found**, notify the user and stop. If the PR is **MERGED**, continue — testing a merged PR on staging is valid (the deploy agent will warn about the merged branch and deploy the head commit). If the PR is **CLOSED** (rejected/abandoned, not merged), warn the user and ask whether to continue or stop. For multiple PRs, ask two questions: (1) **parallel or sequential?** and (2) **same staging server or separate servers?** These determine how environment info is gathered and whether cleanup must run between PRs. See `references/environment-setup.md` → "Environment Setup Modes" for the full handling matrix.
 
+### 0.1b Playwright CLI Pre-flight
+
+Run immediately after 0.1, before spawning any agents:
+
+```bash
+if ! which playwright-cli > /dev/null 2>&1; then
+  echo "[Pre-flight] playwright-cli not found — installing..."
+  npm install -g @playwright/cli@latest
+fi
+playwright-cli --version
+```
+
+If `npm install` exits non-zero **or** `playwright-cli --version` fails after install → stop the session:
+```
+[BLOCKED] playwright-cli installation failed.
+Fix: run manually → npm install -g @playwright/cli@latest
+Then restart the skill.
+```
+
+Never proceed to Phase 0.3 without a confirmed working `playwright-cli`.
+
 ### 0.2 Gather Staging Environment
 
 Ask for these details before spawning any agents. Do NOT assume or hardcode values:
@@ -713,6 +734,7 @@ Merge this structure into `qa-test-progress.json`. For each key, only set it if 
   "seed_data": [],
   "bugs_found": [],
   "screenshots": [],
+  "videos": [],
   "blv_findings": [],
   "security_findings": [],
   "hlt_findings": [],
@@ -752,36 +774,63 @@ Agent(
   browser process (no shared singleton, no mutex needed).
 
   playwright-cli quick reference:
-    playwright-cli navigate <url>                 # navigate to URL
-    playwright-cli snapshot                       # compact YAML listing element refs (e.g. e21)
-    playwright-cli click <ref-or-selector>        # click by ref (e21) or text/CSS selector
-    playwright-cli fill "<selector>" "<value>"    # fill an input field
-    playwright-cli select "<selector>" "<value>"  # choose a dropdown option
-    playwright-cli screenshot --path <file>       # save screenshot to disk (not injected into context)
-    playwright-cli close                          # close browser — MANDATORY at journey end
+    playwright-cli navigate <url>                               # navigate to URL
+    playwright-cli snapshot                                     # compact YAML listing element refs (e.g. e21)
+    playwright-cli click <ref-or-selector>                      # click by ref (e21) or text/CSS selector
+    playwright-cli fill "<selector>" "<value>"                  # fill an input field
+    playwright-cli select "<selector>" "<value>"                # choose a dropdown option
+    playwright-cli screenshot --path <file>                     # save screenshot to disk
+    playwright-cli video-start <filename> --size=1280x800       # start recording → saves to .playwright-cli/<filename>
+    playwright-cli video-chapter "<title>"                      # insert chapter marker in active recording
+    playwright-cli video-stop                                   # stop recording — MUST run BEFORE close
+    playwright-cli close                                        # close browser — MANDATORY at journey end
 
-  2. Navigate to entry_point and authenticate:
+  2. Start video recording for this journey:
+     mkdir -p qa-videos/pr<N>
+     playwright-cli video-start J-<id>.webm --size=1280x800
+
+  3. Navigate to entry_point and authenticate:
      playwright-cli navigate <staging_url><entry_point>
      playwright-cli snapshot                       # locate login fields
      playwright-cli fill "[name=email]" "<email>"
      playwright-cli fill "[name=password]" "<password>"
      playwright-cli click "[type=submit]"
      playwright-cli snapshot                       # confirm authenticated state
-  3. Execute every step in the journey YAML in order
-  4. Core cycle per step: navigate/click → snapshot (read YAML for refs) → interact → snapshot → screenshot
+     playwright-cli video-chapter "Authenticated as <role>"
+
+  4. Execute every step in the journey YAML in order.
+     Before each step: playwright-cli video-chapter "Step <N>: <action>"
+  5. Core cycle per step: navigate/click → snapshot (read YAML for refs) → interact → snapshot → screenshot
      Element refs (e.g. e21) are ephemeral — re-snapshot after every DOM change before the next action
-  5. Screenshot before and after every key state change:
+  6. Screenshot before and after every key state change:
      playwright-cli screenshot --path qa-screenshots/pr<N>/<step-name>.png
-  6. After every full page load, re-snapshot and check for error messages in the YAML output
-  7. If server_verification is not null:
+  7. After every full page load, re-snapshot and check for error messages in the YAML output
+  8. If a step fails: playwright-cli video-chapter "FAILURE" --description "<what went wrong>"
+  9. If server_verification is not null:
      - Navigate to Server > Management > Commands in the xCloud UI
      - Run the verification command via Command Runner
      - playwright-cli screenshot --path qa-screenshots/pr<N>/server-verify.png — server-side evidence
-  8. Close browser at the end of this group (MANDATORY — even on FAIL or BLOCKED):
+  10. End of journey — stop recording BEFORE closing browser (mandatory order):
+     playwright-cli video-stop
      playwright-cli close
-     pkill -f chromium 2>/dev/null || true    # force-kill residual browser process if close didn't terminate it
-     If this agent handles multiple journeys (a group), run both commands after each
-     journey and before navigating to the next journey's entry point.
+     pkill -f chromium 2>/dev/null || true    # force-kill residual browser process
+
+  11. Conditional video keep/delete based on result:
+     VIDEO_SRC=".playwright-cli/J-<id>.webm"
+     VIDEO_DEST="qa-videos/pr<N>/J-<id>.webm"
+     if RESULT == "PASS":
+       rm -f "$VIDEO_SRC"                    # discard — no video evidence needed for PASS
+     else:
+       # FAIL or BLOCKED — keep as evidence
+       if [ -s "$VIDEO_SRC" ]; then
+         mv "$VIDEO_SRC" "$VIDEO_DEST"
+         # record in sidecar (see below)
+       else
+         echo "WARNING: video file missing or empty — recording may have failed"
+       fi
+
+  If this agent handles multiple journeys (a group): run steps 10–11 after each journey,
+  then restart from step 2 for the next journey before navigating to its entry point.
 
   IMPORTANT — Do NOT write directly to qa-test-progress.json (concurrent agents will corrupt it).
   Instead, write each journey result to its own sidecar file:
@@ -794,8 +843,12 @@ Agent(
     "steps": [{"step_index": N, "action": "...", "observation": "...", "screenshot_file": "..."}],
     "server_verification_output": "<output or null>",
     "bugs": [{"title": "...", "severity": "...", "root_cause_file": "...", "root_cause_line": N, "screenshot_file": "..."}],
-    "screenshots": [{"file": "...", "description": "..."}]
+    "screenshots": [{"file": "...", "description": "..."}],
+    "videos": [{"file": "qa-videos/pr<N>/J-<id>.webm", "description": "Full journey recording", "partial": false}]
   }
+
+  videos[] is [] for PASS journeys (video was deleted). Set partial: true if the file was
+  crash-recovered from .playwright-cli/ without a clean video-stop.
 
   If this agent handles multiple journeys (a group), write one sidecar file per journey.
 
@@ -827,6 +880,7 @@ for sidecar_file in glob("qa-test-progress.J-*.json"):
     }
     main["bugs_found"].extend(data["bugs"])
     main["screenshots"].extend(data["screenshots"])
+    main["videos"].extend(data.get("videos", []))
     result_key = data["result"].lower()   # "pass" | "fail" | "blocked"
     main["summary"][result_key] = main["summary"].get(result_key, 0) + 1
     os.remove(sidecar_file)   # clean up after merging
@@ -996,31 +1050,52 @@ Print: `[Phase 6] <N> gaps found — dispatching <N> journeys in <N> groups`
 
 ## Phase 7: Reporting + Cleanup
 
-### Step 7.1 — Upload Screenshots (BLOCKING — run first, before report)
+### Step 7.1 — Upload Screenshots and Videos (BLOCKING — run first, before report)
 
 ```bash
-# --json outputs {filename: url} map to stdout; use this to avoid the state-file-deleted-on-success bug.
-UPLOAD_JSON=$(python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
+# 1. Upload screenshots
+SCREENSHOT_JSON=$(python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
   --dir qa-screenshots/pr<N> --pr <N> --json)
-UPLOAD_EXIT=$?
+SCREENSHOT_EXIT=$?
+
+# 2. Upload videos (FAIL/BLOCKED journeys only — PASS videos were deleted by journey agents)
+VIDEO_JSON="{}"
+VIDEO_EXIT=0
+if [ -d "qa-videos/pr<N>" ] && [ "$(ls -A qa-videos/pr<N> 2>/dev/null)" ]; then
+  VIDEO_JSON=$(python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
+    --dir qa-videos/pr<N> --pr <N> --json)
+  VIDEO_EXIT=$?
+fi
 ```
 
-**This is mandatory and must complete before spawning the report agent.** Check the exit code:
-- Exit 0 → all uploads succeeded. `UPLOAD_JSON` holds `{"01-login.png": "https://res.cloudinary.com/..."}`.
-  **Write back Cloudinary URLs into `qa-test-progress.json`**:
-  ```python
-  import json, os
-  url_map = json.loads(UPLOAD_JSON)          # flat {filename: url} — no "uploaded" wrapper
-  main = json.load(open("qa-test-progress.json"))
-  for s in main["screenshots"]:
-      filename = os.path.basename(s["file"]) # extract "01-login.png" from full path
-      if filename in url_map:
-          s["cloudinary_url"] = url_map[filename]
-  json.dump(main, open("qa-test-progress.json", "w"), indent=2)
-  ```
-  After write-back, every screenshot entry has a `cloudinary_url` field. The report agent reads this field first; if absent, it falls back to the local `file` path.
-- Non-zero exit (partial failure) → `UPLOAD_JSON` still contains URLs for files that did upload; run
-  the same write-back above to save partial results, then warn the user and continue with mixed paths.
+**Both uploads must complete before spawning the report agent.** Write Cloudinary URLs back into `qa-test-progress.json`:
+
+```python
+import json, os
+
+screenshot_url_map = json.loads(SCREENSHOT_JSON)
+video_url_map      = json.loads(VIDEO_JSON)
+
+main = json.load(open("qa-test-progress.json"))
+
+for s in main["screenshots"]:
+    filename = os.path.basename(s["file"])
+    if filename in screenshot_url_map:
+        s["cloudinary_url"] = screenshot_url_map[filename]
+
+for v in main.get("videos", []):
+    filename = os.path.basename(v["file"])
+    if filename in video_url_map:
+        v["cloudinary_url"] = video_url_map[filename]
+
+json.dump(main, open("qa-test-progress.json", "w"), indent=2)
+```
+
+After write-back, screenshot entries have `cloudinary_url` and FAIL/BLOCKED video entries have `cloudinary_url`. The report agent reads these fields; if absent, falls back to local `file` path.
+
+- `SCREENSHOT_EXIT` non-zero → partial screenshot failure; run write-back with what uploaded, warn user, continue.
+- `VIDEO_EXIT` non-zero → partial video failure; same — write back partial results, warn, continue.
+- `qa-videos/pr<N>/` empty or missing → video upload step skipped silently (all journeys PASSED).
 
 **This is the only permitted upload method.** Never write a loop, curl command, or custom upload script.
 
@@ -1037,6 +1112,12 @@ Agent(
   4. Embed screenshots: for each screenshot in qa-test-progress.json screenshots array,
      use screenshots[i].cloudinary_url if present, otherwise fall back to screenshots[i].file
      (local path). Never hardcode paths — always read from the screenshots array.
+  4b. Embed videos: for each entry in qa-test-progress.json videos array, embed under the
+     corresponding FAIL or BLOCKED journey section only:
+     - Has cloudinary_url → **Video evidence:** [Watch full journey recording](<cloudinary_url>)
+     - partial: true → **Video evidence (partial — agent crashed):** [Watch partial recording](<cloudinary_url>)
+     - No cloudinary_url (upload failed) → **Video evidence (upload failed — local only):** `<file>`
+     PASS sections never have video entries — do not add a video line to PASS sections.
   5. Every FAIL section needs: root cause file + line number
   6. Every PASS section needs: at least one screenshot as evidence
   7. Section 9 — Security Concerns (MANDATORY — never skip or write 'N/A' without checking):
@@ -1249,7 +1330,10 @@ playwright-cli command reference:
 | `playwright-cli fill "<selector>" "<value>"` | Fill an input field |
 | `playwright-cli select "<selector>" "<value>"` | Choose a dropdown option |
 | `playwright-cli screenshot --path <file>` | Save screenshot to disk |
-| `playwright-cli close && pkill -f chromium 2>/dev/null \|\| true` | Close browser — MANDATORY at end of every journey; pkill ensures the process is gone |
+| `playwright-cli video-start <filename> --size=1280x800` | Start recording — output goes to `.playwright-cli/<filename>` |
+| `playwright-cli video-chapter "<title>"` | Insert chapter marker (accepts `--description`, `--duration` flags) |
+| `playwright-cli video-stop` | Stop recording and write `.webm` — **must run before `close`** |
+| `playwright-cli close && pkill -f chromium 2>/dev/null \|\| true` | Close browser — MANDATORY after `video-stop`; pkill ensures the process is gone |
 
 Element refs (e.g. `e21`) are ephemeral — always re-snapshot after any DOM mutation before the next interaction.
 
@@ -1297,6 +1381,12 @@ No `qa-browser.lock` file, no timeout, no serialization — parallel journey age
 | Wrong Tinker enum values | Always load `references/environment-setup.md` before creating seed records |
 | Confirming journeys without checking feature map | Cross-reference `xcloud-feature-map.md` to catch missing UI pages |
 | Reading code instead of testing | Log in, perform the action, screenshot the result. Code reading = review, not QA. |
+| `playwright-cli close` before `video-stop` | `video-stop` must run first — closing browser before stopping recording produces a corrupt or zero-byte `.webm` |
+| Keeping PASS journey videos | Delete `.playwright-cli/J-<id>.webm` for PASS journeys immediately — only FAIL/BLOCKED videos are moved to `qa-videos/` |
+| Uploading videos before screenshots in Phase 7.1 | Screenshot upload runs first; video upload second — both complete before report agent spawns |
+| Missing `videos: []` in checkpoint schema | Phase 5A checkpoint must include `"videos": []` or the merge pseudocode `extend` will KeyError |
+| Skipping video upload when `qa-videos/` is empty | Check directory exists and is non-empty before running video upload — skip silently if no FAIL/BLOCKED videos |
+| playwright-cli not on PATH | Phase 0.1b pre-flight installs it automatically — never assume it's present on the machine |
 | "Verified by reviewing the diff" as evidence | Trigger the actual scenario on staging and observe the result |
 | Skipping adversarial journeys for forms and async buttons | Every form gets a boundary-value + invalid-input journey; every async action button gets a double-submit + interrupted-flow journey — these are required, not optional |
 | Skipping HLT agent for UI PRs | Any PR with Vue/Blade changes gets the HLT agent — it runs in background, costs little, and catches critical UX failures before users hit them |
