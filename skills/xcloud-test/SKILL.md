@@ -683,7 +683,7 @@ Which mode? (A / B / C)
 **Re-run detection (check before writing anything):** If `qa-test-progress.json` already exists and contains `"pr": "<same PR number>"` with a non-empty `journeys` array, print:
 ```
 [WARNING] qa-test-progress.json already has results for PR #<N>.
-Overwriting will lose all previous test data (journeys, bugs, screenshots, blv_findings, security_findings).
+Overwriting will lose all previous test data (journeys, bugs, screenshots, videos, qa-screenshots/, qa-videos/, blv_findings, security_findings).
 Type "overwrite" to proceed, or "abort" to stop.
 ```
 Wait for the user's response before continuing.
@@ -818,16 +818,28 @@ Agent(
   11. Conditional video keep/delete based on result:
      VIDEO_SRC=".playwright-cli/J-<id>.webm"
      VIDEO_DEST="qa-videos/pr<N>/J-<id>.webm"
-     if RESULT == "PASS":
+     if [ "$RESULT" = "PASS" ]; then
        rm -f "$VIDEO_SRC"                    # discard — no video evidence needed for PASS
-     else:
+     else
        # FAIL or BLOCKED — keep as evidence
        if [ -s "$VIDEO_SRC" ]; then
          mv "$VIDEO_SRC" "$VIDEO_DEST"
-         # record in sidecar (see below)
+         # Write videos[] entry into the sidecar file:
+         python3 - <<'PYEOF'
+import json
+path = "qa-test-progress.J-<id>.json"
+data = json.load(open(path))
+data.setdefault("videos", []).append({
+    "file": "qa-videos/pr<N>/J-<id>.webm",
+    "description": "Full journey recording",
+    "partial": False
+})
+json.dump(data, open(path, "w"), indent=2)
+PYEOF
        else
          echo "WARNING: video file missing or empty — recording may have failed"
        fi
+     fi
 
   If this agent handles multiple journeys (a group): run steps 10–11 after each journey,
   then restart from step 2 for the next journey before navigating to its entry point.
@@ -922,6 +934,8 @@ Each agent uses the same template as Pipeline Mode (sidecar file and crash proto
 ---
 
 ## Phase 5C: Interactive Mode
+
+> **No automated video recording in Interactive Mode.** Browser sessions are manual, so playwright-cli video recording does not apply. If you want video evidence for a FAIL journey, screen-record the session yourself and drop the file into `qa-videos/pr<N>/` before Phase 7 uploads.
 
 The agent is a **test guide**. You perform every browser action. The agent tells you exactly what to do, records what you report, and tracks results in `qa-test-progress.json`.
 
@@ -1061,7 +1075,7 @@ SCREENSHOT_EXIT=$?
 # 2. Upload videos (FAIL/BLOCKED journeys only — PASS videos were deleted by journey agents)
 VIDEO_JSON="{}"
 VIDEO_EXIT=0
-if [ -d "qa-videos/pr<N>" ] && [ "$(ls -A qa-videos/pr<N> 2>/dev/null)" ]; then
+if [ -d "qa-videos/pr<N>" ] && ls qa-videos/pr<N>/*.webm qa-videos/pr<N>/*.mp4 2>/dev/null | grep -q .; then
   VIDEO_JSON=$(python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
     --dir qa-videos/pr<N> --pr <N> --json)
   VIDEO_EXIT=$?
@@ -1231,6 +1245,11 @@ Agent(
   7. i18n staging verification — for every HARDCODED_STRING or MISSING_KEY finding in
      i18n_findings: is there a screenshot in the report showing the actual string on staging?
      If a critical/high i18n finding has no staging evidence, flag it.
+  8. Video evidence in FAIL/BLOCKED sections — for each journey marked FAIL or BLOCKED in
+     qa-test-progress.json, check if qa-test-progress.json['videos'] contains an entry for
+     that journey. If it does, verify the corresponding report section contains a
+     "Video evidence:" line with a working link. Flag any FAIL/BLOCKED section that has
+     a video entry in the JSON but no video link in the report.
 
   Return format:
   GAPS FOUND:
@@ -1263,6 +1282,8 @@ echo Server::find(<id>) ? 'EXISTS — not deleted!' : 'Deleted OK';
 ```
 
 Log cleanup results in the report "Test Data Cleanup" section.
+
+> **Note:** `qa-screenshots/` and `qa-videos/` are kept intentionally — they are the permanent evidence archive for the PR. Only seed database records (servers, sites) are deleted during cleanup.
 
 ---
 
@@ -1387,7 +1408,6 @@ No `qa-browser.lock` file, no timeout, no serialization — parallel journey age
 | Missing `videos: []` in checkpoint schema | Phase 5A checkpoint must include `"videos": []` or the merge pseudocode `extend` will KeyError |
 | Skipping video upload when `qa-videos/` is empty | Check directory exists and is non-empty before running video upload — skip silently if no FAIL/BLOCKED videos |
 | playwright-cli not on PATH | Phase 0.1b pre-flight installs it automatically — never assume it's present on the machine |
-| "Verified by reviewing the diff" as evidence | Trigger the actual scenario on staging and observe the result |
 | Skipping adversarial journeys for forms and async buttons | Every form gets a boundary-value + invalid-input journey; every async action button gets a double-submit + interrupted-flow journey — these are required, not optional |
 | Skipping HLT agent for UI PRs | Any PR with Vue/Blade changes gets the HLT agent — it runs in background, costs little, and catches critical UX failures before users hit them |
 | Skipping i18n agent when strings changed | Any PR adding/modifying user-facing strings gets the i18n agent — hardcoded strings and missing keys break non-English users silently |
@@ -1396,6 +1416,7 @@ No `qa-browser.lock` file, no timeout, no serialization — parallel journey age
 | First-time user journey skips "observe" steps | These steps are mandatory — snapshot the page and note what a new user reads before any click, not just what happens after |
 | HLT finding not verified on staging | Every critical/high HLT finding must have a screenshot from a first-time-user journey proving it exists on staging — not just "code says so" |
 | Writing "No human logic issues" without checking all 5 lenses | Section 5.6 must name each lens and state why it found nothing — a blank "none" is always wrong |
+| "Verified by reviewing the diff" as evidence | Trigger the actual scenario on staging and observe the result |
 
 ---
 
@@ -1405,6 +1426,7 @@ Print a one-line status at every phase boundary and every journey result. Never 
 
 ```
 [Phase 0] PR #<N> validated — <N> files, <N> UI pages affected
+[Phase 0] playwright-cli verified / installed
 [Phase 0] Analysis + deploy agents spawned in parallel
 [Phase 0] Deploy confirmed — branch <name>, commit <hash>
 [Phase 1] Generated <N> journeys (<N> variants) — waiting for confirmation
@@ -1415,7 +1437,7 @@ Print a one-line status at every phase boundary and every journey result. Never 
 [Phase 4] Mode selected: Pipeline / Multi-agent / Interactive
 [Phase 5] [Group N] J-<ID> PASS | J-<ID> FAIL — <bug>    ← one line per group as it arrives
 [Phase 6] Gap evaluation: <N> gaps found, <N> journeys added
-[Phase 7] Uploading <N> screenshots... (blocking — waiting for exit 0)
+[Phase 7] Uploading <N> screenshots + <N> videos... (blocking — waiting for exit 0)
 [Phase 7] Report agent + UX agent spawned in parallel
 [Phase 7] Report written: QA-Report-PR-<N>.md
 [Phase 7] Reassessment: <N> gaps found / clean

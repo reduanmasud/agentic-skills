@@ -58,7 +58,7 @@ def get_cloudinary_config():
     return cloud_name, api_key, api_secret
 
 
-def find_screenshots(directory):
+def find_media_files(directory):
     dir_path = Path(directory)
     if not dir_path.exists():
         print(f"ERROR: Directory not found: {directory}", file=sys.stderr)
@@ -192,10 +192,10 @@ def main():
     args = parser.parse_args()
 
     cloud_name, api_key, api_secret = get_cloudinary_config()
-    all_files = find_screenshots(args.dir)
+    all_files = find_media_files(args.dir)
 
     if not all_files:
-        print(f"No screenshots found in {args.dir}")
+        print(f"No media files found in {args.dir}")
         sys.exit(0)
 
     # Resume: load state from previous run
@@ -217,7 +217,7 @@ def main():
             print(f"All {total} files already uploaded. Use --reset to re-upload.")
             # Still print the report
         else:
-            print(f"Uploading {total} screenshot(s) to Cloudinary (PR #{args.pr})  "
+            print(f"Uploading {total} file(s) to Cloudinary (PR #{args.pr})  "
                   f"[batch size: {args.batch_size}]")
 
     failures = []
