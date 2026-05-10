@@ -773,46 +773,46 @@ Agent(
   All browser interactions use playwright-cli via Bash — each agent spawns its own
   browser process (no shared singleton, no mutex needed).
 
-  playwright-cli quick reference:
-    playwright-cli navigate <url>                               # navigate to URL
-    playwright-cli snapshot                                     # compact YAML listing element refs (e.g. e21)
-    playwright-cli click <ref-or-selector>                      # click by ref (e21) or text/CSS selector
-    playwright-cli fill "<selector>" "<value>"                  # fill an input field
-    playwright-cli select "<selector>" "<value>"                # choose a dropdown option
-    playwright-cli screenshot --path <file>                     # save screenshot to disk
-    playwright-cli video-start <filename> --size=1280x800       # start recording → saves to .playwright-cli/<filename>
-    playwright-cli video-chapter "<title>"                      # insert chapter marker in active recording
-    playwright-cli video-stop                                   # stop recording — MUST run BEFORE close
-    playwright-cli close                                        # close browser — MANDATORY at journey end
+  playwright-cli quick reference (always pass -s=J-<id> for session isolation):
+    playwright-cli -s=J-<id> navigate <url>                     # navigate to URL
+    playwright-cli -s=J-<id> snapshot                           # compact YAML listing element refs (e.g. e21)
+    playwright-cli -s=J-<id> click <ref-or-selector>            # click by ref (e21) or text/CSS selector
+    playwright-cli -s=J-<id> fill "<selector>" "<value>"        # fill an input field
+    playwright-cli -s=J-<id> select "<selector>" "<value>"      # choose a dropdown option
+    playwright-cli -s=J-<id> screenshot --path <file>           # save screenshot to disk
+    playwright-cli -s=J-<id> video-start <filename> --size=1280x800   # start recording
+    playwright-cli -s=J-<id> video-chapter "<title>"            # insert chapter marker in active recording
+    playwright-cli -s=J-<id> video-stop                         # stop recording — MUST run BEFORE close
+    playwright-cli -s=J-<id> close                              # close browser — MANDATORY at journey end
 
   2. Start video recording for this journey:
      mkdir -p qa-videos/pr<N>
-     playwright-cli video-start J-<id>.webm --size=1280x800
+     playwright-cli -s=J-<id> video-start J-<id>.webm --size=1280x800
 
   3. Navigate to entry_point and authenticate:
-     playwright-cli navigate <staging_url><entry_point>
-     playwright-cli snapshot                       # locate login fields
-     playwright-cli fill "[name=email]" "<email>"
-     playwright-cli fill "[name=password]" "<password>"
-     playwright-cli click "[type=submit]"
-     playwright-cli snapshot                       # confirm authenticated state
-     playwright-cli video-chapter "Authenticated as <role>"
+     playwright-cli -s=J-<id> navigate <staging_url><entry_point>
+     playwright-cli -s=J-<id> snapshot                  # locate login fields
+     playwright-cli -s=J-<id> fill "[name=email]" "<email>"
+     playwright-cli -s=J-<id> fill "[name=password]" "<password>"
+     playwright-cli -s=J-<id> click "[type=submit]"
+     playwright-cli -s=J-<id> snapshot                  # confirm authenticated state
+     playwright-cli -s=J-<id> video-chapter "Authenticated as <role>"
 
   4. Execute every step in the journey YAML in order.
-     Before each step: playwright-cli video-chapter "Step <N>: <action>"
+     Before each step: playwright-cli -s=J-<id> video-chapter "Step <N>: <action>"
   5. Core cycle per step: navigate/click → snapshot (read YAML for refs) → interact → snapshot → screenshot
      Element refs (e.g. e21) are ephemeral — re-snapshot after every DOM change before the next action
   6. Screenshot before and after every key state change:
-     playwright-cli screenshot --path qa-screenshots/pr<N>/<step-name>.png
+     playwright-cli -s=J-<id> screenshot --path qa-screenshots/pr<N>/<step-name>.png
   7. After every full page load, re-snapshot and check for error messages in the YAML output
-  8. If a step fails: playwright-cli video-chapter "FAILURE" --description "<what went wrong>"
+  8. If a step fails: playwright-cli -s=J-<id> video-chapter "FAILURE" --description "<what went wrong>"
   9. If server_verification is not null:
      - Navigate to Server > Management > Commands in the xCloud UI
      - Run the verification command via Command Runner
-     - playwright-cli screenshot --path qa-screenshots/pr<N>/server-verify.png — server-side evidence
+     - playwright-cli -s=J-<id> screenshot --path qa-screenshots/pr<N>/server-verify.png
   10. End of journey — stop recording BEFORE closing browser (mandatory order):
-     playwright-cli video-stop
-     playwright-cli close
+     playwright-cli -s=J-<id> video-stop
+     playwright-cli -s=J-<id> close
      pkill -f chromium 2>/dev/null || true    # force-kill residual browser process
 
   11. Write the sidecar file first (see "Sidecar file format" below), then move the video
@@ -1271,7 +1271,7 @@ Agent(
 
 If the reassessment returns gaps:
 - Fix each gap in `QA-Report-PR-<N>.md` before proceeding to Cleanup
-- For missing screenshots: use playwright-cli to navigate to the relevant page, capture the evidence, upload, and embed
+- For missing screenshots: use `playwright-cli -s=gap-fix navigate …` / `screenshot` to capture the evidence, upload, and embed
 - Print: `[Phase 7] Report reassessment: <N> gaps found and fixed` or `[Phase 7] Report reassessment: clean`
 
 ### Cleanup
@@ -1352,18 +1352,20 @@ Core interaction cycle: **navigate → snapshot (read YAML) → interact → sna
 
 playwright-cli command reference:
 
+Always pass `-s=<session-name>` (e.g. `-s=J-001`) to every command. This pins all calls for a journey to one isolated browser profile — cookies, storage, and state never leak between parallel agents.
+
 | Command | Purpose |
 |---|---|
-| `playwright-cli navigate <url>` | Navigate to a URL |
-| `playwright-cli snapshot` | Compact YAML listing element refs — read to determine next action |
-| `playwright-cli click <ref-or-selector>` | Click element by ref (e.g. `e21`) or text/CSS selector |
-| `playwright-cli fill "<selector>" "<value>"` | Fill an input field |
-| `playwright-cli select "<selector>" "<value>"` | Choose a dropdown option |
-| `playwright-cli screenshot --path <file>` | Save screenshot to disk |
-| `playwright-cli video-start <filename> --size=1280x800` | Start recording — output goes to `.playwright-cli/<filename>` |
-| `playwright-cli video-chapter "<title>"` | Insert chapter marker (accepts `--description`, `--duration` flags) |
-| `playwright-cli video-stop` | Stop recording and write `.webm` — **must run before `close`** |
-| `playwright-cli close && pkill -f chromium 2>/dev/null \|\| true` | Close browser — MANDATORY after `video-stop`; pkill ensures the process is gone |
+| `playwright-cli -s=<name> navigate <url>` | Navigate to a URL |
+| `playwright-cli -s=<name> snapshot` | Compact YAML listing element refs — read to determine next action |
+| `playwright-cli -s=<name> click <ref-or-selector>` | Click element by ref (e.g. `e21`) or text/CSS selector |
+| `playwright-cli -s=<name> fill "<selector>" "<value>"` | Fill an input field |
+| `playwright-cli -s=<name> select "<selector>" "<value>"` | Choose a dropdown option |
+| `playwright-cli -s=<name> screenshot --path <file>` | Save screenshot to disk |
+| `playwright-cli -s=<name> video-start <filename> --size=1280x800` | Start recording — output goes to `.playwright-cli/<filename>` |
+| `playwright-cli -s=<name> video-chapter "<title>"` | Insert chapter marker (accepts `--description`, `--duration` flags) |
+| `playwright-cli -s=<name> video-stop` | Stop recording and write `.webm` — **must run before `close`** |
+| `playwright-cli -s=<name> close && pkill -f chromium 2>/dev/null \|\| true` | Close browser — MANDATORY after `video-stop`; pkill ensures the process is gone |
 
 Element refs (e.g. `e21`) are ephemeral — always re-snapshot after any DOM mutation before the next interaction.
 
@@ -1371,7 +1373,7 @@ Element refs (e.g. `e21`) are ephemeral — always re-snapshot after any DOM mut
 
 ### Browser Isolation in Parallel Modes
 
-playwright-cli spawns a **separate browser process per agent** — there is no shared singleton. Each parallel agent gets its own browser session, its own cookie jar, and an independent lifecycle. A close or crash in one agent does not affect others.
+playwright-cli spawns a **separate browser process per agent** — there is no shared singleton. Each parallel agent gets its own browser session, its own cookie jar, and an independent lifecycle. A close or crash in one agent does not affect others. Passing `-s=J-<id>` (the journey ID as the session name) on every command adds explicit profile-level isolation on top of process isolation, ensuring cookies and local storage can never bleed between journeys even if two agents happen to share a machine user account.
 
 All three phases run fully concurrently:
 
