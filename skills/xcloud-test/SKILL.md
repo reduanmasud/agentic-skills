@@ -133,8 +133,8 @@ Agent(
   description="BLV + security analysis for PR #<N>",
   prompt="Apply business logic and security analysis to PR #<N>.
 
-  Input — paste the consumer list and changed files from the analysis agent output:
-  [paste analysis output here]
+  Input — copy the full text the analysis agent returned (changed file paths, consumer
+  list, affected categories a/b/c/d) and paste it here in place of this paragraph.
 
   1. BLV (if PR touches thresholds, limits, billing, or permissions):
      Load references/testing-categories.md. Apply the 5-lens BLV methodology.
@@ -167,8 +167,8 @@ Agent(
   description="Human Logic Test for PR #<N>",
   prompt="Apply human logic and UX analysis to PR #<N>.
 
-  Input — paste the changed files list and UI pages from the analysis agent output:
-  [paste analysis output here]
+  Input — copy the full text the analysis agent returned (changed file paths, UI pages
+  affected) and paste it here in place of this paragraph.
 
   Read every changed *.vue, *.blade.php, and front-end JS file in full.
   Apply all 5 lenses below. Each lens targets a different class of critical UX failure.
@@ -249,8 +249,8 @@ Agent(
   description="Translation/i18n check for PR #<N>",
   prompt="Audit all user-facing string changes in PR #<N> for translation completeness.
 
-  Input — paste the changed files list from the analysis agent output:
-  [paste analysis output here]
+  Input — copy the full text the analysis agent returned (changed file paths, affected
+  string locations) and paste it here in place of this paragraph.
 
   Read every changed PHP, Blade, and Vue file in full. Then:
 
@@ -815,31 +815,38 @@ Agent(
      playwright-cli close
      pkill -f chromium 2>/dev/null || true    # force-kill residual browser process
 
-  11. Conditional video keep/delete based on result:
-     VIDEO_SRC=".playwright-cli/J-<id>.webm"
-     VIDEO_DEST="qa-videos/pr<N>/J-<id>.webm"
-     if [ "$RESULT" = "PASS" ]; then
-       rm -f "$VIDEO_SRC"                    # discard — no video evidence needed for PASS
-     else
-       # FAIL or BLOCKED — keep as evidence
-       if [ -s "$VIDEO_SRC" ]; then
-         mv "$VIDEO_SRC" "$VIDEO_DEST"
-         # Write videos[] entry into the sidecar file:
-         python3 - <<'PYEOF'
-import json
-path = "qa-test-progress.J-<id>.json"
-data = json.load(open(path))
+  11. Write the sidecar file first (see "Sidecar file format" below), then move the video
+     and append to the sidecar. The sidecar MUST exist before step 11b runs.
+
+     a. Write the sidecar now with result, steps, bugs, screenshots — leave videos: [].
+
+     b. Conditional video keep/delete (substitute actual journey id and PR number for
+        <id> and <N> in every line below before running):
+        VIDEO_SRC=".playwright-cli/J-<id>.webm"
+        VIDEO_DEST="qa-videos/pr<N>/J-<id>.webm"
+        SIDECAR="qa-test-progress.J-<id>.json"
+        if [ "$RESULT" = "PASS" ]; then
+          rm -f "$VIDEO_SRC"                  # discard — no video evidence needed for PASS
+        else
+          # FAIL or BLOCKED — move video and record in sidecar
+          if [ -s "$VIDEO_SRC" ]; then
+            mv "$VIDEO_SRC" "$VIDEO_DEST"
+            # Append video entry to the already-written sidecar:
+            python3 - "$VIDEO_DEST" "$SIDECAR" <<'PYEOF'
+import json, sys
+dest, sidecar_path = sys.argv[1], sys.argv[2]
+data = json.load(open(sidecar_path))
 data.setdefault("videos", []).append({
-    "file": "qa-videos/pr<N>/J-<id>.webm",
+    "file": dest,
     "description": "Full journey recording",
     "partial": False
 })
-json.dump(data, open(path, "w"), indent=2)
+json.dump(data, open(sidecar_path, "w"), indent=2)
 PYEOF
-       else
-         echo "WARNING: video file missing or empty — recording may have failed"
-       fi
-     fi
+          else
+            echo "WARNING: video file missing or empty — recording may have failed"
+          fi
+        fi
 
   If this agent handles multiple journeys (a group): run steps 10–11 after each journey,
   then restart from step 2 for the next journey before navigating to its entry point.
@@ -1075,7 +1082,7 @@ SCREENSHOT_EXIT=$?
 # 2. Upload videos (FAIL/BLOCKED journeys only — PASS videos were deleted by journey agents)
 VIDEO_JSON="{}"
 VIDEO_EXIT=0
-if [ -d "qa-videos/pr<N>" ] && ls qa-videos/pr<N>/*.webm qa-videos/pr<N>/*.mp4 2>/dev/null | grep -q .; then
+if [ -d "qa-videos/pr<N>" ] && ls qa-videos/pr<N>/*.webm qa-videos/pr<N>/*.mp4 qa-videos/pr<N>/*.mov 2>/dev/null | grep -q .; then
   VIDEO_JSON=$(python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
     --dir qa-videos/pr<N> --pr <N> --json)
   VIDEO_EXIT=$?
@@ -1246,10 +1253,12 @@ Agent(
      i18n_findings: is there a screenshot in the report showing the actual string on staging?
      If a critical/high i18n finding has no staging evidence, flag it.
   8. Video evidence in FAIL/BLOCKED sections — for each journey marked FAIL or BLOCKED in
-     qa-test-progress.json, check if qa-test-progress.json['videos'] contains an entry for
-     that journey. If it does, verify the corresponding report section contains a
-     "Video evidence:" line with a working link. Flag any FAIL/BLOCKED section that has
-     a video entry in the JSON but no video link in the report.
+     qa-test-progress.json, check if qa-test-progress.json['videos'] contains an entry
+     whose `file` field includes that journey's ID string (e.g. a videos[] entry with
+     `"file": "qa-videos/pr123/J-002.webm"` belongs to journey J-002). If such an entry
+     exists, verify the corresponding report section contains a "Video evidence:" line with
+     a link. Flag any FAIL/BLOCKED section that has a matching video entry in the JSON but
+     no video link in the report.
 
   Return format:
   GAPS FOUND:
