@@ -1,1457 +1,189 @@
 ---
 name: xcloud-test
-description: Use when testing a Pull Request on the xCloud staging environment — QA testing, verifying a fix on staging, running smoke/sanity/regression/security tests against a deployed PR, testing with multiple user roles, checking IDOR or permissions, or analyzing staging server performance. Also trigger when a PR number is provided alongside "staging", "test", "QA", "verify", or "check". Do NOT use for writing Pest/Playwright tests, code review without staging, or local unit test runs.
+description: Use when deep-testing an xCloud pull request on real servers and real roles in the xcdev lab — QA that hunts for bugs the author cannot see (wrong expectations, neighbour regressions, existing-customer state, role/IDOR leaks, silent job failures, untranslated or broken text in the 20 languages) with spec-first and black-box testing and a before/after comparison against staging `dev`. Trigger on a PR number with "test", "QA", "verify", "break it", "multi-role", "IDOR", or "staging". Falls back to a plain SSH staging server when the lab is unavailable. Do NOT use for writing Pest/Playwright tests, code review without running anything, one-check-at-a-time live verification (use kaztrack-live-verify), or a quick merge-safety pass (use xcloud_qa).
 user-invocable: true
 disable-model-invocation: false
-argument-hint: "[PR-number(s)-or-URL(s)]"
+argument-hint: "[PR-number] [interactive]"
 ---
 
-You are a Senior QA Engineer testing Pull Requests on the **xCloud** platform — a cloud hosting and server-management platform built with Laravel 9+, Vue 3 + Inertia.js, and Tailwind CSS.
-
-Each PR follows an eight-phase workflow:
-**PR Intake → Journey Mapping → Seed Data → Adaptive Questions → Mode Selection → Testing → Gap Evaluation → Report + Cleanup**
-
-## When NOT to Use This Skill
-
-- **Writing automated tests** (Pest, PHPUnit, Playwright E2E) → use `xcloud-e2e-writer`
-- **Code review without staging deployment** → use `pr-review`
-- **Running unit/feature tests locally** → just run `pest`
-- **Generating QA checklists without testing** → use `qa-checklist`
-- **General server debugging** unrelated to a PR → SSH directly
-- **Deploying without testing** — this skill tests, not just deploys
-
-## Task Progress Indicators (MANDATORY)
-
-Create tasks immediately at session start — before anything else:
-
-```
-TaskCreate: "Phase 0: PR intake + analysis + deploy (parallel)"
-TaskCreate: "Phase 1: Journey mapping"
-TaskCreate: "Phase 2: Seed data generation"
-TaskCreate: "Phase 3: Adaptive knowledge gathering"
-TaskCreate: "Phase 4: Mode selection"
-TaskCreate: "Phase 5: Test execution"
-TaskCreate: "Phase 6: Gap evaluation"
-TaskCreate: "Phase 7: Report + cleanup"
-```
-
-Mark each `in_progress` when started, `completed` when done.
-
-## Context Budget Rules
-
-- Data exceeding 3 sentences goes to `qa-test-progress.json` — the main session holds summaries only
-- Sub-agents return **≤ 200 words** to the main session; full details live in the JSON file
-- Reference files (`playwright-mcp-guide.md`, `server-verification.md`, `report-template.md`, etc.) load **inside sub-agents only** — the main session never loads them
-- After all testing completes and before gap evaluation: run `/save-session` and print `[CHECKPOINT] All journeys done. Full results in qa-test-progress.json.`
-
----
-
-## Phase 0: PR Intake
-
-### 0.1 Parse & Validate
-
-```bash
-gh pr view <PR_NUMBER> --json number,title,headRefName,state \
-  -q '"\(.number) — \(.title) [\(.headRefName)] (\(.state))"'
-```
-
-If the PR is **not found**, notify the user and stop. If the PR is **MERGED**, continue — testing a merged PR on staging is valid (the deploy agent will warn about the merged branch and deploy the head commit). If the PR is **CLOSED** (rejected/abandoned, not merged), warn the user and ask whether to continue or stop. For multiple PRs, ask two questions: (1) **parallel or sequential?** and (2) **same staging server or separate servers?** These determine how environment info is gathered and whether cleanup must run between PRs. See `references/environment-setup.md` → "Environment Setup Modes" for the full handling matrix.
-
-### 0.1b Playwright CLI Pre-flight
-
-Run immediately after 0.1, before spawning any agents:
-
-```bash
-if ! which playwright-cli > /dev/null 2>&1; then
-  echo "[Pre-flight] playwright-cli not found — installing..."
-  npm install -g @playwright/cli@latest
-fi
-playwright-cli --version
-```
-
-If `npm install` exits non-zero **or** `playwright-cli --version` fails after install → stop the session:
-```
-[BLOCKED] playwright-cli installation failed.
-Fix: run manually → npm install -g @playwright/cli@latest
-Then restart the skill.
-```
-
-Never proceed to Phase 0.3 without a confirmed working `playwright-cli`.
-
-### 0.2 Gather Staging Environment
-
-Ask for these details before spawning any agents. Do NOT assume or hardcode values:
-
-- Staging URL
-- SSH access (`user@host`)
-- App path on server
-- Paid test account (email / password)
-- Free test account (email / password)
-- Whitelabel URL (if the PR touches whitelabel features)
-
-### 0.3 Pipelined Analysis + Deployment
-
-Spawn both agents in a **single message** (parallel):
-
-**Analysis agent** (worktree isolation — reads PR code safely without touching main session git state):
-
-```
-Agent(
-  isolation="worktree",
-  description="Analyze PR #<N>",
-  prompt="Analyze PR #<N> for xcloud-test QA.
-
-  1. Fetch PR code (detached HEAD — no local branch created):
-     git fetch origin 'refs/pull/<N>/head' && git checkout FETCH_HEAD
-  2. gh pr view <N> — read title, description, linked issues
-  3. gh pr diff <N> --name-only — list changed files
-  4. Read each changed file in full (not just the diff hunk):
-     - Controllers: all actions, middleware, how changed method fits in
-     - Models: relationships, casts, accessors, scopes
-     - Policies: all authorization methods
-     - Vue components: props, computed, lifecycle, full template
-     - Migrations: all column changes, indexes, constraints
-     - Services/Actions: complete workflow
-  5. Cross-reference references/xcloud-feature-map.md to find affected UI pages
-  6. For every changed function/class/constant: grep all consumers across:
-     Controllers, Services, Jobs, Form Requests, Policies, Blade scripts, Vue, Models, Routes
-  7. Return:
-     - Changed files list + what changed in each
-     - Affected features and UI pages
-     - All cross-feature consumers found
-     - PR summary: what / why / how (3 sentences max)
-     - Stack scope: which stacks (nginx/openlitespeed/docker_nginx/openclaw) are affected
-     - Flags: (a) does PR touch billing/thresholds/limits/permissions? (b) does PR touch Policies/middleware/auth/API endpoints? (c) does PR touch any UI files (*.vue, *.blade.php, front-end JS/CSS, Inertia pages)? (d) does PR add or change any user-facing strings (labels, button text, error messages, toasts, validation messages, empty states, modal copy)?"
-)
-```
-
-**BLV + Security agent** — spawn immediately after the analysis agent returns, **only if** it flagged billing or auth concerns. Runs in background while Phases 1–2 proceed. Wait for it before sending Phase 3 questions.
-
-```
-Agent(
-  run_in_background=true,
-  description="BLV + security analysis for PR #<N>",
-  prompt="Apply business logic and security analysis to PR #<N>.
-
-  Input — copy the full text the analysis agent returned (changed file paths, consumer
-  list, affected categories a/b/c/d) and paste it here in place of this paragraph.
-
-  1. BLV (if PR touches thresholds, limits, billing, or permissions):
-     Load references/testing-categories.md. Apply the 5-lens BLV methodology.
-     Flag any cases where the implementation may run correctly but produce wrong results
-     (wrong threshold, off-by-one guard, misleading output). ≤ 3 sentences per finding.
-  2. Security (if PR touches Policies, middleware, auth, or API endpoints):
-     Load references/security-testing.md. Identify IDOR risks (cross-team resource access),
-     guard asymmetry, and missing authorization checks. For each risk, note:
-     - the affected route/resource
-     - which user roles could exploit it
-     - expected vs. actual guard behavior
-  3. Write ALL findings to qa-test-progress.json immediately:
-     {
-       "blv_findings": [{"title": "...", "severity": "...", "description": "..."}],
-       "security_findings": [{"check": "...", "risk": "...", "route": "...", "severity": "...",
-                              "idor_target": "...", "recommendation": "..."}]
-     }
-     Use empty arrays if nothing found for that category.
-  4. Return a ≤ 100-word summary of findings. Full details are in qa-test-progress.json."
-)
-```
-
-Skip this agent entirely for PRs where analysis flagged neither (a) nor (b).
-
-**Human Logic Test (HLT) agent** — spawn immediately after the analysis agent returns, **only if** it flagged (c) UI files. Runs in background alongside BLV+Security. Wait for it before sending Phase 3 questions.
-
-```
-Agent(
-  run_in_background=true,
-  description="Human Logic Test for PR #<N>",
-  prompt="Apply human logic and UX analysis to PR #<N>.
-
-  Input — copy the full text the analysis agent returned (changed file paths, UI pages
-  affected) and paste it here in place of this paragraph.
-
-  Read every changed *.vue, *.blade.php, and front-end JS file in full.
-  Apply all 5 lenses below. Each lens targets a different class of critical UX failure.
-
-  LENS 1 — EXPECTATION
-  For every UI element in the changed files (button, toggle, status badge, form field, link):
-  - What does a first-time user assume this does based on its label, icon, and position?
-  - Does the actual behavior match that assumption?
-  Flag every mismatch: e.g. a button labelled 'Apply' that saves permanently, a badge that
-  says 'Active' when the underlying resource is still provisioning, a toggle that triggers
-  an irreversible action without looking destructive.
-
-  LENS 2 — FEEDBACK
-  For every user-triggered action in the changed UI (click, submit, toggle, delete):
-  - Is there a loading/processing indicator while the server responds?
-  - Is there a distinct success state the user can see?
-  - Is there a distinct failure state?
-  Flag any action that could leave the user uncertain whether it worked, particularly
-  long-running server operations (installs, migrations, deployments) with no visible progress.
-
-  LENS 3 — ERROR INTELLIGIBILITY
-  For every error message, validation message, toast, or empty state in the changed code:
-  - Does it name specifically what went wrong? ('Port must be between 1 and 65535' vs 'Invalid input')
-  - Does it tell the user what to do next?
-  Flag all generic strings: 'Something went wrong', 'Operation failed', 'Error occurred',
-  'Please try again' with no context. These are HIGH severity — users cannot self-serve.
-
-  LENS 4 — REVERSIBILITY
-  For every destructive or significant action (delete, uninstall, disable, transfer, reset):
-  - Is there a confirmation dialog that names exactly what will be deleted or changed?
-  - Is the consequence permanent or reversible?
-  Flag destructive actions with no confirmation, or confirmations with generic copy
-  ('Are you sure?' without naming the resource). Also flag permanent actions presented
-  casually without indicating permanence.
-
-  LENS 5 — CONSISTENCY
-  Compare the changed UI against the rest of xCloud (use your knowledge of the platform):
-  - Does this feature use the same button placement, copy style, and feedback pattern
-    as similar features (e.g. PHP management, site creation, backup flows)?
-  - Does it follow xCloud's existing terminology and interaction patterns?
-  Flag inconsistencies that would confuse users familiar with other parts of the app,
-  or flows that contradict established patterns without obvious reason.
-
-  Write ALL findings to qa-test-progress.json immediately:
-  {
-    'hlt_findings': [
-      {
-        'lens': 'expectation | feedback | error_intelligibility | reversibility | consistency',
-        'title': '...',
-        'severity': 'critical | high | medium | low',
-        'location': 'ComponentName.vue line N or route /path',
-        'observed': '...',
-        'expected': '...',
-        'recommendation': '...'
-      }
-    ]
-  }
-  Use an empty array if no issues found (do not skip the key).
-
-  Severity guide:
-  - critical: user can lose data, perform an unintended destructive action, or be
-    completely stuck with no way forward
-  - high: user will likely misunderstand the feature or need support to proceed
-  - medium: confusing but recoverable; user will figure it out after a moment
-  - low: polish issue; minor inconsistency with low user impact
-
-  Return a ≤ 100-word summary. Full details are in qa-test-progress.json."
-)
-```
-
-Skip this agent entirely for PRs where analysis flagged (c) as false (no UI files changed).
-
-**Translation / i18n agent** — spawn immediately after the analysis agent returns, **only if** it flagged (d) user-facing string changes. Runs in background alongside BLV+Security and HLT. Wait for it before sending Phase 3 questions.
-
-```
-Agent(
-  run_in_background=true,
-  description="Translation/i18n check for PR #<N>",
-  prompt="Audit all user-facing string changes in PR #<N> for translation completeness.
-
-  Input — copy the full text the analysis agent returned (changed file paths, affected
-  string locations) and paste it here in place of this paragraph.
-
-  Read every changed PHP, Blade, and Vue file in full. Then:
-
-  STEP 1 — HARDCODED STRING DETECTION
-  For every user-facing string in the changed files (button labels, headings, error messages,
-  toast notifications, validation messages, placeholder text, empty state copy, modal copy):
-  - Is the string wrapped in a translation helper?
-    PHP/Blade: __('key'), trans('key'), @lang('key'), Lang::get('key')
-    Vue/JS: \$t('key'), \$tc('key'), trans() injected via Inertia shared data
-  - Flag every hardcoded string that bypasses these helpers as a MISSING_KEY finding.
-    Hardcoded strings are always severity 'high' — they break all non-English users.
-
-  STEP 2 — KEY EXISTENCE CHECK
-  For every translation key used in the changed files:
-  - Search the repository for the language files:
-      resources/lang/en/*.php
-      lang/en/*.php
-      resources/lang/en.json
-      lang/en.json
-  - Does the key exist in the English source file?
-  - If the key does NOT exist: flag as MISSING_KEY (severity critical — raw key shown to users).
-  - If the key exists: proceed to Step 3.
-
-  STEP 3 — COMPLETENESS ACROSS LANGUAGES
-  List all language directories found under resources/lang/ or lang/ (excluding 'en').
-  For each non-English language directory:
-  - Does it have the same key defined?
-  - If missing: flag as UNTRANSLATED_KEY (severity medium — falls back to English or raw key
-    depending on app config, but non-English users get inconsistent experience).
-
-  STEP 4 — NEW KEY NAMING CONVENTIONS
-  For every NEW translation key introduced by this PR:
-  - Does it follow the existing naming convention in the file it was added to?
-    (e.g. dot-notation 'server.create.success', snake_case 'server_create_success')
-  - Flag naming inconsistencies as LOW severity.
-
-  Write ALL findings to qa-test-progress.json immediately:
-  {
-    'i18n_findings': [
-      {
-        'type': 'MISSING_KEY | UNTRANSLATED_KEY | HARDCODED_STRING | NAMING_CONVENTION',
-        'severity': 'critical | high | medium | low',
-        'file': 'path/to/file.vue',
-        'line': N,
-        'string_or_key': '...',
-        'languages_missing': ['fr', 'de', 'ar'],
-        'recommendation': '...'
-      }
-    ]
-  }
-  Use an empty array if no issues found (do not skip the key).
-
-  Return a ≤ 100-word summary (counts by type and severity). Full details in qa-test-progress.json."
-)
-```
-
-Skip this agent entirely for PRs where analysis flagged (d) as false (no user-facing string changes).
-
-**Deploy agent**:
-
-```
-Agent(
-  description="Deploy PR #<N> to staging",
-  prompt="Deploy PR #<N> to the staging server.
-  SSH: <user>@<host>  App path: <path>
-
-  STEP 0 — CHECK IF ALREADY DEPLOYED (always run first):
-  Get the PR's head commit and state:
-    PR_STATE=$(gh pr view <N> --json state -q '.state')
-    PR_COMMIT=$(gh pr view <N> --json headRefOid -q '.headRefOid')
-    PR_BRANCH=$(gh pr view <N> --json headRefName -q '.headRefName')
-  If PR_STATE is 'MERGED' or 'CLOSED':
-    → Print a WARNING: "PR #<N> is <state>. The branch may no longer exist on remote.
-      Deploying the PR's head commit directly. This is the merged code, not the current default branch."
-    → Proceed using the head commit hash (FETCH_HEAD), not the branch name.
-  Get what is currently on the server:
-    DEPLOYED_BRANCH=$(ssh <user>@<host> 'cd <path> && git branch --show-current')
-    DEPLOYED_COMMIT=$(ssh <user>@<host> 'cd <path> && git rev-parse HEAD')
-  If DEPLOYED_BRANCH == PR_BRANCH AND DEPLOYED_COMMIT == PR_COMMIT:
-    → Skip deployment entirely.
-    → Return: branch name, commit hash, deploy method (already-deployed), status (success)
-  Otherwise: proceed with deployment below.
-
-  PREFERRED — try the automated deploy script first:
-  python3 ~/.claude/skills/xcloud-test/scripts/deploy_to_staging.py \
-    --pr <N> --ssh '<user>@<host>' --path '<path>'
-  (Add --skip-build for backend-only PRs, --skip-migrate to skip migrations.)
-  If the script exits 0, skip to the VERIFY step below.
-
-  FALLBACK — if the script fails or is unavailable:
-  1. Get branch: gh pr view <N> --json headRefName -q '.headRefName'
-  2. SSH to server — stash uncommitted changes first if any exist:
-     cd <path>
-     git status --short  # check for uncommitted changes
-     git stash           # only if git status showed changes
-     git fetch origin && git checkout <branch> && git pull origin <branch>
-  3. Clear caches:
-     php artisan config:clear && php artisan cache:clear && php artisan route:clear && php artisan view:clear
-  4. Run migrations: php artisan migrate --force
-  5. If composer.json changed: composer install --no-interaction --no-dev
-  6. If frontend files (*.vue, *.js, package.json) changed: npm install && npm run build
-
-  VERIFY (always — script or manual):
-  7. git branch --show-current && git log --oneline -1
-  8. Return: branch name, commit hash, deploy method (script/manual/already-deployed), status (success/failure), any errors"
-)
-```
-
-If deploy fails → report error, stop this PR.
-If analysis fails → report error AND cancel/abandon the deploy agent if it is still running (no further action needed from it). Stop this PR.
-If analysis returns but flags no changed files → warn the user and ask whether to continue or stop.
-
-Print when both return:
-```
-[Phase 0] Analysis complete — <N> files changed, <N> UI pages affected
-[Phase 0] Deploy confirmed — branch <name>, commit <hash>
-```
-
----
-
-## Phase 1: Journey Mapping
-
-After analysis, derive **user journeys** — structured descriptions of how real users interact with the affected features. Journeys replace traditional test case lists as the primary unit of QA planning.
-
-### 1.1 Journey Structure
-
-Each journey is a YAML document:
-
-```yaml
-journey:
-  id: "J-001"
-  name: "<short action-oriented name>"
-  actor:
-    role: "paid_user | free_user | admin | team_member | whitelabel_user"
-    plan: "paid | free | enterprise"
-    context: "<optional: e.g. 'non-owner team member', 'server owner'>"
-  goal: "<what the user is trying to accomplish in plain language>"
-  entry_point: "<URL path or nav shorthand: Server > PHP>"
-  steps:
-    - action: "navigate | click | fill | select | verify | confirm | wait"
-      target: "<element, page area, or label>"
-      value: "<input value if fill or select — omit otherwise>"
-      note: "<optional: timing, conditional, or context>"
-  expected_outcome: "<observable result in the UI after all steps>"
-  server_verification: "<Command Runner or SSH command to verify server state — null if UI-only>"
-  seed_data:
-    server:
-      stack: "nginx | openlitespeed | docker_nginx | openclaw | null"
-      status: "provisioned | <other state>"   # see environment-setup.md for valid enum values
-    site:
-      type: "php | wordpress | static | node | null"
-  variants:
-    - id: "J-001-V1"
-      description: "<what differs from the base journey>"
-      actor:
-        role: "<role>"
-        plan: "<plan>"
-      expected_outcome: "<different expected result for this actor>"
-      seed_data: {}    # only overrides — empty means inherit from base journey
-  tags: ["<feature>", "<category>"]
-```
-
-### 1.2 Deriving Journeys from Analysis
-
-For each changed feature or UI page found in Phase 0, generate journeys covering these types:
-
-| Journey Type | Description | Include when |
+# xcloud-test — find the bugs the PR author cannot see
+
+The author ran the unit tests, and the PR code passes them. That proves the code does what the code says,
+not what customers need. This skill finds the gap. Four rules come before any procedure:
+
+1. **The expected result never comes from the PR's code.** It comes from the issue, the PR's promises, the
+   product docs, support history, how `dev` behaves today, and common sense. An agent that has not read the diff
+   writes it down first (`references/oracle.md`). The code shows where to test, not what should happen, and a
+   result is judged only by observable behaviour (screen, response, email, server state), never by reading code.
+   One explorer tests with no code access at all (`references/blackbox.md`).
+2. **Before/after, not after-only.** Reproduce the problem on staging `ci/dev` (plain `dev`), then show the
+   preview behaves differently. A fix you never saw broken is PARTIALLY VERIFIED at best.
+3. **A success screen or HTTP 200 is not proof.** Every check runs the sentinel (`scripts/sentinel.sh`): new
+   `laravel.log` errors, new `failed_jobs`, the tasks the action started and their exit codes. A green toast
+   with a failed task is a FAIL.
+4. **Real servers, real roles, real paths.** Lab servers provisioned by the PR's own app, seeded accounts
+   (`as`), requests through the site's own web server. Never a hand-made `Server::create()` row with a fake IP.
+
+Lab tool names below are the xcdev MCP's (`mcp__xcdev__*`, load with ToolSearch). `references/lab.md` maps
+each need to a tool and lists the lab traps. Without lab access, use `references/staging-fallback.md`.
+
+## Files
+
+| File | Loaded by | Purpose |
 |---|---|---|
-| **Happy path** | Primary actor succeeds at the core action | Always |
-| **Blocked user** | Free/restricted user hits a billing or permission guard | Any guard exists in the PR |
-| **Edge actor** | Team member (non-owner) or admin attempts the same action | PR touches permissions or policies |
-| **Error path** | Primary actor encounters an expected failure (invalid input, server error, missing dependency) | Always |
-| **Regression** | A cross-feature consumer still works correctly | For each consumer found in Phase 0 analysis |
-| **Stack variant** | Same journey repeated on a different server stack | PR modifies stack-specific code |
-| **State variant** | Same journey on a server/site in a different state | PR behavior changes based on existing state |
-| **First-time user** | Actor has zero prior knowledge of this feature. Journey includes explicit **observe** steps before any interaction: snapshot the page and note what a new user would read, assume, or misunderstand before clicking anything. Expected outcome must include "user can understand what happened without reading docs". | PR touches any UI file (flag c from Phase 0 analysis) |
-| **Adversarial** | Systematically probes the cases the happy path skips: boundary values, invalid inputs, double-actions, interrupted flows, and stale data. Each adversarial journey targets one specific failure mode. | Any PR touching a form, async operation, or live-state display |
+| `references/oracle.md` | oracle agent | spec-first expected behaviour, without the diff |
+| `references/code-map.md` | code-map agent | entry points, consumers, surfaces, risk class |
+| `references/probes.md` | main (Phase 2) + executors | what to try, by risk class: where real bugs hide |
+| `references/blackbox.md` | black-box explorer | customer-side exploratory testing, no code access |
+| `references/language.md` | main + `[lang]` executors | the 20 languages: static audit, live checks, emails |
+| `references/lab.md` | main + executors | xcdev tool map, accounts, fixtures, traps, cleanup |
+| `references/executor.md` | executor agents | how to run a check, sentinel, evidence, result schema |
+| `references/report.md` | main (Phase 6) | report shape, verdict rules |
+| `references/xcloud-feature-map.md` | code-map agent | UI page hints (confirm in `routes/` before use) |
+| `references/staging-fallback.md` | main, only without the lab | SSH staging path |
+| `scripts/sentinel.sh` | executors (via `cp_exec`) | before/after log, failed-job and task snapshot |
+| `scripts/lab-flow.mjs` | executors | browser flows `page_check` cannot do (hover, upload, read, video) |
+| `scripts/lang_audit.py` | main (Phase 1) | strings the PR adds: missing translations, placeholders, hardcoded text |
+| `scripts/results.py` | main | merge executor results, validate, render the report |
 
-> **Regression journey scope:** Start the journey from the **consumer's own entry point** — not from the action that creates the state. Assume the primary feature (already tested in the happy-path journey) worked correctly. Pre-set seed data to the post-action state so the regression journey only exercises the consumer's UI or behavior, without repeating the primary feature's steps.
-
-**Variant generation rules:**
-- If the PR touches billing guards → identify each **unique guard** (policy method, middleware class, or plan check). Add a free-user billing variant only to the **first** happy-path journey that exercises each unique guard. For other happy-path journeys sharing the same guard, note: `billing guard shared with J-XXX-V1 — not duplicated`. Do NOT add a free-user variant to every journey when they all pass through the same guard.
-- If the PR touches policies or permissions → add a team-member variant to affected journeys
-- If the PR is in stack-specific code but calls a shared service → add OLS/Docker variants and flag for clarification in Phase 3
-- If the PR modifies a migration → add a journey testing behavior on pre-existing data (not just fresh schema)
-- If Phase 0 analysis raised a security flag (IDOR risk) → add an IDOR journey: paid account attempts to access a resource owned by a different team; expected outcome is 403 or redirect, not the resource
-- If Phase 0 analysis flagged UI files (flag c) → add one **first-time user** journey per changed feature page. For each HLT finding written to `qa-test-progress.json`, add an explicit verification step to the first-time user journey that tests whether the issue is real on staging (e.g. if HLT flagged a generic error message, trigger the error in the journey and screenshot the actual message)
-- For every **form or user input** in the changed files → add two adversarial journeys: (1) **boundary-value** — submit with a value exactly at the plan/server limit, one over the limit, and zero/empty; (2) **invalid-input** — submit with special characters, an XSS-like string (`<script>alert(1)</script>`), and an excessively long value (500+ characters). Verify the UI shows a clear, specific error rather than crashing or silently accepting.
-- For every **async operation** (button that triggers a server-side action: install, migrate, deploy, delete) → add two adversarial journeys: (1) **double-submit** — click the trigger button twice rapidly before the first response returns; verify no duplicate operation or UI deadlock; (2) **interrupted flow** — navigate away or close the modal while the operation is in progress; verify the server either completes cleanly or rolls back, and the UI reflects the correct final state when revisited.
-- For every **page that displays live state** (status badge, resource list, counts) → add one **stale-data** adversarial journey: open the page, trigger a relevant state change via another action (Tinker or a separate tab), return to the original page without a full reload, and verify the displayed state is current — not stale from the initial load.
-
-**Minimum journey counts:**
-
-| PR Scope | Minimum Journeys (including variants) |
-|---|---|
-| Small (1–3 files) | 4 |
-| Medium (4–10 files) | 8 |
-| Large (10+ files) | 12 |
-
-### 1.3 Present & Confirm
-
-Show a collapsed one-liner per journey:
-
-```
-Generated <N> journeys for PR #<N> (<feature name>):
-
-J-001:      Paid user installs PHP 8.3 on Nginx server → PHP appears in list, server confirms
-J-001-V1:   Free user attempts same → upgrade prompt shown, install blocked
-J-002:      Paid user removes PHP 8.1 (OLS server) → PHP 8.1 removed from list
-J-002-V1:   Team member without PHP permission attempts → 403 or blocked UI
-J-003:      Paid user toggles OPCache on → OPCache active on managed server
-J-004:      Page refresh after PHP install → installed state persists, no stale UI
-
-Edit before we proceed:
-  "remove J-X"           — drop a journey
-  "add: <description>"   — add a new one
-  "modify J-X: <change>" — adjust actor, steps, or expected outcome
-
-Type "confirmed" when ready, or edit the list.
-```
-
-**Wait for confirmation before proceeding to Phase 2.**
+Run state lives in `~/.xcloud-qa/pr<N>/` (outside the repo, so `git status` stays clean): `spec.md`, `codemap.md`, `plan.md`, `facts.json`,
+`results/*.json`, `evidence/`, `report.md`. The main session keeps summaries only; sub-agents return ≤ 200 words.
 
 ---
 
-## Phase 2: Seed Data Generation
+## Phase 0 — Intake and deploy (in parallel)
 
-Create all test data **before any browser opens**. Never create seed data ad-hoc during testing.
+1. `gh pr view <N> --json number,title,body,state,headRefName,baseRefName,headRefOid,files,closingIssuesReferences`
+   and `gh api repos/xCloudDev/xCloud/compare/<baseRefName>...<headRefOid> --jq '"behind=\(.behind_by)"'`.
+   Not found → stop. CLOSED (not merged) → ask. MERGED → test it with `env_create {ref: <merge commit>}` and say so.
+   **Baseline = the PR's base**: into `dev` → staging `ci/dev`; into `master` (hotfix) → your own
+   `env_create {workspace: "<yours>", env: "base<N>", ref: "master"}` (start it now, it takes 3-10 min).
+2. **Superseded?** `git log origin/dev -S '<a key line the PR adds>' --oneline`. Already on `dev` → report that
+   and stop unless the user wants the rest checked.
+3. `lab_list {mine: true}`: remove your own leftovers from earlier runs first (ask if they may belong to work in
+   progress). `env_status {environment: "ci/pr-<N>"}`: note `used_by`.
+4. **Deploy now, in the background**: `preview_deploy {pr: N, mode: "merged_onto_dev"}` (PR into `dev`, what
+   would land) or `mode: "head"` (hotfix into `master`, or the user asks). `needs_confirmation` → tell the user
+   who is on it; deploy with `confirm_shared: true` only with their OK. Keep the job id; `job_wait` it later.
+5. Spawn in **one message**:
+   - **Oracle agent**: prompt = `references/oracle.md` + PR number. It must not read the diff.
+   - **Code-map agent**: prompt = `references/code-map.md` + PR number.
+6. When the deploy job is done: `env_status` again. Confirm `deploy.lab_build.sha` is the commit you meant.
+   Print `[Phase 0] PR #N <title> — preview <sha> (<mode>), <behind> behind dev`.
 
-### 2.1 Identify Unique Seeds
+## Phase 1 — Reconcile spec and code (main session)
 
-Deduplicate `seed_data` across all journeys. Variants that share the same `(stack, state, site_type)` as their base journey reuse the same records — do not create duplicates.
+Read `spec.md` and `codemap.md` (both short by design). Build a table of **suspects**: every place where
+- the spec expects something the code does not do (missing case, missing surface, missing role),
+- the code does something the spec never asked for (changed default, a new side effect, a widened query),
+- the PR description promises something ("graceful", "only affects X", "preserves") — each promise is a claim,
+- a consumer or neighbour of the changed code is not mentioned in the PR at all.
 
-### 2.2 Generate Tinker Scripts
+Suspects are hypotheses, not findings. Each becomes at least one check in the plan.
 
-**Parallelism rule:** Count independent seed configurations — groups with no foreign-key dependency between them (e.g. nginx server, OLS server, and docker_nginx server are independent; a site depends on its parent server).
+Run the language audit (free, static): `python3 ~/.claude/skills/xcloud-test/scripts/lang_audit.py --base
+origin/<base> --head origin/pr/<N>` (fetch `refs/pull/<N>/head` first). Every customer-visible finding becomes a
+`[lang]` check (`references/language.md`).
 
-- **≤ 3 independent configs** → run all in a single SSH → Tinker session (see example below)
-- **4+ independent configs** → spawn one SSH agent per independent config in a **single message** (parallel). Each agent creates its records, verifies them, and writes IDs to a **per-agent sidecar** (`qa-seed-<stack>.json` e.g. `qa-seed-nginx.json`) instead of writing directly to `qa-test-progress.json`. After all seed agents return, the main session merges all `qa-seed-*.json` sidecars into `qa-test-progress.json["seed_data"]`. This avoids concurrent write corruption between parallel seed agents and the background BLV agent. Sites that depend on a server must be created in the same agent as their parent server — not in a separate parallel agent.
+## Phase 2 — Plan (one user stop)
 
-For each unique seed configuration, generate a Tinker script and run it via SSH on the staging app server:
+Load `references/probes.md`. Write `plan.md`: a numbered list of **checks**, each one line plus fields:
 
-```bash
-ssh <user>@<host>
-cd <app-path>
-php artisan tinker
+```
+C-03  [role] user2 (team B) opens team A's server backups page            env: preview
+      expect (spec S-4): 403 or redirect, no data       baseline: same on ci/dev
+      how: page_check as user2 + app_call GET /api/server/<A server id>/backups as user2 (id or uuid: whatever the route binds)
+      server: q<N>-ng      sentinel: yes      source: suspect X-2
 ```
 
-```php
-// Inside Tinker — example: Nginx server seed for J-001 + J-001-V1
-$user = User::where('email', '<your-paid-test@email.com>')->first();
-$team = Team::find($user->current_team_id);
+Format matters (`scripts/results.py` parses it): each check starts `C-<nn>  [<tag>]`; tag the PR's primary
+claim `[primary]` and give each suspect's check `source: suspect …`; those decide the verdict.
 
-$server = Server::create([
-    'name'               => 'qa-nginx-' . rand(1000, 9999),
-    'user_id'            => $user->id,
-    'team_id'            => $team->id,
-    'status'             => 'provisioned',    // NOT 'state', NOT 'active' — use enum value
-    'stack'              => 'nginx',           // valid values: see environment-setup.md
-    'is_connected'       => true,
-    'is_provisioned'     => true,
-    'public_ip'          => '10.0.0.1',       // NOT 'ip' — use 'public_ip'
-    'private_ip'         => '10.0.0.1',
-    'ssh_port'           => 22,
-    'ssh_username'       => 'root',
-    'sudo_password'      => '<SUDO_PASSWORD>',
-    'database_type'      => 'mysql_8',
-    'database_name'      => 'xcloud',
-    'database_password'  => '<DB_PASSWORD>',
-    'next_site_prefix_id'=> 1,
-    'ubuntu_version'     => '24.04',
-]);
-echo "server_id: {$server->id}\n";
+Order: (1) the primary claim, reproduced on `ci/dev` and then on the preview; (2) every suspect; (3) every
+entry point and surface from the code map; (4) the probe classes `probes.md` selects for this PR's risk class;
+(5) `[lang]` checks: the audit's findings plus, for any PR that changes what customers read, one long language
+(de), one CJK (ja or sc) and one complex script (th/hi/bn) on the changed pages, and emails it sends.
+Merge checks that need the same setup. No quota: a 1-file copy fix may need 4 checks, a provisioning change 25.
 
-// Site seed if needed
-$site = Site::create([
-    'server_id' => $server->id,
-    'team_id'   => $team->id,
-    'name'      => 'qa-site-' . rand(1000, 9999),
-    'type'      => 'php',            // valid values: see environment-setup.md
-    // ...
-]);
-echo "site_id: {$site->id}\n";
-```
+Show the user one message: the suspects table, the check list (one line each), the server matrix you will
+create, and **at most 3 questions** whose answers change what is tested (intended behaviour the spec could not
+settle). Ask for `go`, edits, or answers. If the user passed `interactive`, they will run browser steps
+themselves; executors then guide them (see `references/executor.md` → Interactive).
 
-> Load `references/environment-setup.md` for complete required field lists and valid enum values for `stack`, `state`, and `type`. Using wrong enum values is a common mistake — always check the reference.
+## Phase 3 — Environment
 
-### 2.3 Verify & Track
+From the plan's matrix, in one go (details and limits in `references/lab.md`):
+- **Servers**: `servers_create` in `ci/pr-<N>` (names `q<N>-<short>`), one per stack/release/DB the plan needs;
+  `fresh: true` when the PR touches provisioning; Hetzner only for 22.04/ARM (costs money: say so).
+  **Baseline**: the same set (or the subset the primary claim needs) in the baseline environment from Phase 0
+  (`ci/dev`, or your `master` environment for a hotfix). `job_wait` each job.
+- **Sites**: `sites_create` (wordpress, php, laravel). Docker apps and one-click types: through the app's own route
+  with `app_call` (see lab.md).
+- **People**: seeded accounts (`user1` team-admin of team A, `user2` owner of team B, `support1/2`, `admin`) plus
+  `fixture_create` `team_member` (server-admin / site-admin) and `active_customer` when roles are in play;
+  `api_token` per account for Public API checks.
+- **Customer state** the plan asks for (old provisioning, hand edits, a second site, a stopped service): set it up
+  now on the server with `server_exec`, recorded in `facts.json` as what you changed.
+- **Confirm in the app**: every server and site id you will use exists in that environment's app
+  (`app_tinker`: id, uuid, team_id, status). `lab_list` can list servers the app no longer has.
 
-After creating each record, verify it exists:
+Write `facts.json`: `pr`, `tested_line` (the one-line "Tested: …" for the report), environments + shas, every
+server (ref, app id, uuid, stack, release, db, team), every site (ref, id, uuid, name), every account and role,
+token handles (never token values), and what state you planted.
 
-```bash
-php artisan tinker --execute="
-\$s = Server::find(<id>);
-echo \$s->name . ' | ' . \$s->stack . ' | ' . \$s->status;
-"
-```
+## Phase 4 — Execute
 
-**Tinker failure protocol:** If Tinker throws an exception, returns null, or exits non-zero:
-1. Print the exact error message
-2. Stop immediately — do not proceed to Phase 3 with null or missing seed IDs
-3. Report: `[Phase 2 ERROR] Seed creation failed for <record type>: <error>. Fix the seed script and rerun Phase 2.`
-4. Do not silently set IDs to `null` and continue — a missing seed causes silent test failures that look like real bugs
+**Split agents by server, never by topic**: checks that restart or rewrite services on one server must run in one
+agent, in order. Checks with no server side (UI, API, roles) can be split freely. At most 4 agents per message;
+send the next batch when one returns.
 
-Write all created IDs to `qa-test-progress.json` immediately:
+Each executor prompt = `references/executor.md` + its check ids from `plan.md` + `facts.json` path + the spec
+excerpt for its checks. `[lang]` checks also get `references/language.md`.
 
-```json
-{
-  "seed_data": [
-    {"type": "server", "id": 42, "name": "qa-nginx-1234", "stack": "nginx", "journeys": ["J-001", "J-001-V1"]},
-    {"type": "site",   "id": 17, "name": "qa-site-php",   "site_type": "php", "journeys": ["J-003"]}
-  ]
-}
-```
+In the first batch, also spawn the **black-box explorer**: prompt = `references/blackbox.md` + PR number + the paths
+of `spec.md` and `facts.json` only (never the code map, plan or suspects). Give it its own server or site, or a
+UI-only scope, so it cannot collide with an executor's server. Skip it only when the PR changes nothing a
+customer can observe (say so in the report). Each writes `results/<check-id>.json` and returns ≤ 200 words. Print one line per
+returning agent: `[C-03] FAIL — user2 reads team A backups (200, 3 rows)`.
 
-**Do not proceed to Phase 3 until all seed records are verified.** A missing seed causes silent test failures that look like real bugs.
+After all return: `python3 ~/.claude/skills/xcloud-test/scripts/results.py merge ~/.xcloud-qa/pr<N>`. It flags
+missing result files, PASS/FAIL without evidence, PASS results whose sentinel shows new errors, FAILs without
+repro steps, and anything that looks like a secret. Send each problem back to the agent that owns the check (or
+fix the file yourself when it is clerical) until `merge` exits 0.
+
+## Phase 5 — Skeptic pass
+
+One agent, prompt: "You are the PR author's toughest reviewer and its most skeptical tester. Read
+`~/.xcloud-qa/pr<N>/spec.md`, `plan.md`, `results/`. (a) Which spec claims or suspects have no check, or only a
+check whose evidence would also pass on broken code? (b) Pick the two PASS results with the weakest evidence
+and re-run them a different way (another role, another stack, another language, through the API instead of the
+UI, twice in a row). (c) For each FAIL, could it be an environment artefact (a lab trap from `references/lab.md`, a wrong
+id, the shared servers)? Re-check it once. Write results like an executor; return ≤ 200 words."
+
+Add any new checks it proposes to `plan.md` and run them (Phase 4 rules). One skeptic round, not a loop.
+
+## Phase 6 — Report
+
+`python3 ~/.claude/skills/xcloud-test/scripts/results.py report ~/.xcloud-qa/pr<N>` renders `report.md` from the results (shape and verdict
+rules: `references/report.md`). Read it, fix the prose (summary, what this PR changes vs pre-existing), and
+check every screenshot before it is shared: no secret on it. Then ask where it goes: PR comment (one comment,
+the compact form), KazTrack doc (full form, PR comment links to it), or local only. Never touch PR labels.
+
+## Phase 7 — Cleanup (always, also after a failed run)
+
+`remove {servers: [...]}` for every `q<N>-*` server in `ci/pr-<N>` **and** `ci/dev`; `fixture_remove` for each
+fixture; `api_token_revoke` / `bot_token_revoke` for each token; `lab_list {mine: true}` shows none of this run's
+resources. Then `report_friction` once per lab problem that cost you time (the lab team reads them). Print
+`[Phase 7] cleanup: <n> servers, <n> fixtures, <n> tokens removed`.
 
 ---
 
-## Phase 3: Adaptive Knowledge Gathering
-
-Seed data is ready. Before selecting a testing mode, resolve ambiguities through adaptive question rounds.
-
-### 3.1 Round Structure
-
-- **Maximum 3 rounds**, **maximum 3 questions per round**
-- Every question must trace to a specific journey, changed file, or consumer found in Phase 0
-- No generic filler questions — if analysis is unambiguous, that topic gets no question
-
-**Stopping conditions (any one is sufficient):**
-- No remaining ambiguities
-- You say "proceed", "enough", or "good to go"
-- 3 rounds completed
-
-### 3.2 Round 1
-
-Always present all questions in one message. Never drip-feed questions one at a time.
-
-Derive questions from these five categories, but only ask about actual ambiguities found:
-
-**A — Stack scope** (ask if changed code is in a stack-specific file but calls a shared service, or vice versa):
-> "The fix is in [file] which is shared across all stacks. Should OLS and Docker get this change, or is Nginx-only intentional?"
-
-**B — Access / billing guards** (ask if UI shows something to free users but backend guard is unclear):
-> "The UI shows [feature] to free users. Is there a backend guard I'm missing, or is free access intentional?"
-
-**C — Edge cases** (ask if an operation can fail mid-way, be run twice, or has unclear rollback behavior):
-> "What should happen if [operation] fails mid-way — roll back, leave partial state, or show a retry prompt?"
-
-**D — Migration behavior** (ask if a migration touches existing data):
-> "If a server already has [config] set, should this migration overwrite it or preserve the existing value?"
-
-**E — Developer insight** (always include both, always last):
-> "Anything specific about this PR you're worried about breaking?"
-> "Any edge cases you already know about that I should make sure to test?"
-
-```
-Round 1 questions (answer what you can — say "proceed" to skip ahead):
-
-1. [stack/access/edge-case question from A–D if applicable]
-2. [second question from A–D if applicable]
-3. Anything you're worried about breaking? Edge cases you know about?
-
-I'll ask follow-up rounds only if your answers raise new questions.
-```
-
-### 3.3 Subsequent Rounds
-
-Only ask a follow-up round if the previous answers introduced new ambiguities. Format identically — questions flow naturally from the previous answers:
-
-```
-Follow-up (your answer to Q1 raised a question):
-
-1. You said OLS should also be tested. The OLS path is in [file] — 
-   should the same fix apply there, or does OLS handle it differently?
-```
-
-### 3.4 Applying Answers to Journeys
-
-After each round, update the journey list:
-
-| Answer | Action |
-|---|---|
-| "OLS should also be tested" | Add OLS variant journeys; create OLS server seed in Phase 2 if not already present |
-| "Free users are blocked server-side" | Confirm blocked-user variant journeys are correct |
-| "Free access is intentional" | Remove blocked-user variants, log: "Free access confirmed intentional" |
-| "It should roll back on failure" | Add error-path journey testing rollback behavior |
-| Developer names a specific edge case | Add it as a new journey |
-
----
-
-## Phase 4: Mode Selection
-
-Journeys confirmed, seeds ready, questions answered. Present mode options and wait for selection.
-
-```
-Ready to test.
-
-<N> journeys  |  <N> seed records created  |  Questions answered
-
-Choose how you want to proceed:
-
-──────────────────────────────────────────────────────────
-A)  Pipeline Mode
-    Journeys grouped by seed conflicts; up to 4 groups dispatched in parallel per batch.
-    You see group results as each batch completes (rolling output).
-    Best for: routine PRs, large journey sets, balanced speed and token cost.
-
-B)  Multi-agent Mode
-    One agent per journey, all dispatched in parallel.
-    You see all results arrive together.
-    Best for: time-sensitive PRs, many independent journeys.
-    Note: variants sharing seed records run sequentially within each group.
-
-C)  Interactive Mode
-    You perform every test step manually. The agent guides you
-    step by step through each journey and records your findings.
-    You see: every step, every expected result, what to verify.
-    Best for: manual-only scenarios (DNS, SSL, email), complex new
-              features, or cases where you want full control.
-──────────────────────────────────────────────────────────
-
-Which mode? (A / B / C)
-```
-
----
-
-## Phase 5A: Pipeline Mode
-
-**Re-run detection (check before writing anything):** If `qa-test-progress.json` already exists and contains `"pr": "<same PR number>"` with a non-empty `journeys` array, print:
-```
-[WARNING] qa-test-progress.json already has results for PR #<N>.
-Overwriting will lose all previous test data (journeys, bugs, screenshots, videos, qa-screenshots/, qa-videos/, blv_findings, security_findings).
-Type "overwrite" to proceed, or "abort" to stop.
-```
-Wait for the user's response before continuing.
-
-**Checkpoint write rule:** Merge into `qa-test-progress.json` — do not overwrite the whole file. Preserve any keys written by earlier phases (particularly `blv_findings`, `security_findings`, and `seed_data`). Only initialize keys that do not already exist. Then group journeys by seed-data conflicts and dispatch in batches.
-
-### Grouping Logic
-
-Before dispatching any agents:
-1. **Group by shared seeds** — journeys sharing the same `server_id` or `site_id` belong to one group and run sequentially within that group (base journey first, then its variants)
-2. **Independent groups run in parallel** — groups with no shared seed records are dispatched together in one message
-3. **Batch size = 4** — dispatch up to 4 groups per message; wait for all groups in a batch to return before sending the next batch
-
-```
-# Example: 6 journeys across 4 independent seed groups → all dispatched in ONE message
-
-Group 1 (server_id=42): J-001, J-001-V1    ← share same server; run sequentially inside the agent
-Group 2 (server_id=55): J-002, J-002-V1
-Group 3 (site_id=17):   J-003              ← standalone
-Group 4 (server_id=99): J-004, J-004-V1
-
-# Batch 1 — 4 groups, ONE message:
-Agent(description="Execute Group 1: J-001 + J-001-V1 (server_id=42)", prompt="...")
-Agent(description="Execute Group 2: J-002 + J-002-V1 (server_id=55)", prompt="...")
-Agent(description="Execute Group 3: J-003 (site_id=17)", prompt="...")
-Agent(description="Execute Group 4: J-004 + J-004-V1 (server_id=99)", prompt="...")
-
-# If >4 groups exist, wait for Batch 1 to complete, then dispatch Batch 2
-```
-
-### Checkpoint File
-
-Merge this structure into `qa-test-progress.json`. For each key, only set it if it does not already exist in the file — never overwrite `blv_findings`, `security_findings`, or `seed_data` written by Phase 0/2:
-
-```json
-{
-  "pr": "<N>",
-  "pr_title": "<title>",
-  "session_started": "<ISO timestamp>",
-  "env": {
-    "staging_url": "<url>",
-    "ssh": "<user@host>",
-    "app_path": "<path>",
-    "paid_account": {"email": "<email>", "password": "<pass>"},
-    "free_account": {"email": "<email>", "password": "<pass>"}
-  },
-  "journeys": {},
-  "seed_data": [],
-  "bugs_found": [],
-  "screenshots": [],
-  "videos": [],
-  "blv_findings": [],
-  "security_findings": [],
-  "hlt_findings": [],
-  "i18n_findings": [],
-  "summary": {"pass": 0, "fail": 0, "blocked": 0}
-}
-```
-
-**Merge pseudocode:**
-```python
-existing = json.load(open("qa-test-progress.json")) if file_exists else {}
-defaults = { ...checkpoint schema above... }
-merged = {**defaults, **existing}  # existing keys take priority
-json.dump(merged, open("qa-test-progress.json", "w"))
-```
-
-### Journey Agent Template
-
-```
-Agent(
-  description="Execute J-<ID>: <journey name>",
-  prompt="Execute a single user journey on xCloud staging.
-
-  Journey YAML:
-  [paste full journey YAML]
-
-  Environment:
-  - Staging URL: <url>
-  - Actor: <email> / <password>  (role: <role>, plan: <plan>)
-  - Seed data: server_id=<id>, site_id=<id>  (null if not applicable)
-  - Screenshots dir: qa-screenshots/pr<N>/
-
-  Instructions:
-  1. Load references/playwright-mcp-guide.md for auth flow and xCloud UI patterns
-
-  All browser interactions use playwright-cli via Bash — each agent spawns its own
-  browser process (no shared singleton, no mutex needed).
-
-  playwright-cli quick reference (always pass -s=J-<id> for session isolation):
-    playwright-cli -s=J-<id> navigate <url>                     # navigate to URL
-    playwright-cli -s=J-<id> snapshot                           # compact YAML listing element refs (e.g. e21)
-    playwright-cli -s=J-<id> click <ref-or-selector>            # click by ref (e21) or text/CSS selector
-    playwright-cli -s=J-<id> fill "<selector>" "<value>"        # fill an input field
-    playwright-cli -s=J-<id> select "<selector>" "<value>"      # choose a dropdown option
-    playwright-cli -s=J-<id> screenshot --path <file>           # save screenshot to disk
-    playwright-cli -s=J-<id> video-start <filename> --size=1280x800   # start recording
-    playwright-cli -s=J-<id> video-chapter "<title>"            # insert chapter marker in active recording
-    playwright-cli -s=J-<id> video-stop                         # stop recording — MUST run BEFORE close
-    playwright-cli -s=J-<id> close                              # close browser — MANDATORY at journey end
-
-  2. Start video recording for this journey:
-     mkdir -p qa-videos/pr<N>
-     playwright-cli -s=J-<id> video-start J-<id>.webm --size=1280x800
-
-  3. Navigate to entry_point and authenticate:
-     playwright-cli -s=J-<id> navigate <staging_url><entry_point>
-     playwright-cli -s=J-<id> snapshot                  # locate login fields
-     playwright-cli -s=J-<id> fill "[name=email]" "<email>"
-     playwright-cli -s=J-<id> fill "[name=password]" "<password>"
-     playwright-cli -s=J-<id> click "[type=submit]"
-     playwright-cli -s=J-<id> snapshot                  # confirm authenticated state
-     playwright-cli -s=J-<id> video-chapter "Authenticated as <role>"
-
-  4. Execute every step in the journey YAML in order.
-     Before each step: playwright-cli -s=J-<id> video-chapter "Step <N>: <action>"
-  5. Core cycle per step: navigate/click → snapshot (read YAML for refs) → interact → snapshot → screenshot
-     Element refs (e.g. e21) are ephemeral — re-snapshot after every DOM change before the next action
-  6. Screenshot before and after every key state change:
-     playwright-cli -s=J-<id> screenshot --path qa-screenshots/pr<N>/<step-name>.png
-  7. After every full page load, re-snapshot and check for error messages in the YAML output
-  8. If a step fails: playwright-cli -s=J-<id> video-chapter "FAILURE" --description "<what went wrong>"
-  9. If server_verification is not null:
-     - Navigate to Server > Management > Commands in the xCloud UI
-     - Run the verification command via Command Runner
-     - playwright-cli -s=J-<id> screenshot --path qa-screenshots/pr<N>/server-verify.png
-  10. End of journey — stop recording BEFORE closing browser (mandatory order):
-     playwright-cli -s=J-<id> video-stop
-     playwright-cli -s=J-<id> close
-     pkill -f chromium 2>/dev/null || true    # force-kill residual browser process
-
-  11. Write the sidecar file first (see "Sidecar file format" below), then move the video
-     and append to the sidecar. The sidecar MUST exist before step 11b runs.
-
-     a. Write the sidecar now with result, steps, bugs, screenshots — leave videos: [].
-
-     b. Conditional video keep/delete (substitute actual journey id and PR number for
-        <id> and <N> in every line below before running):
-        VIDEO_SRC=".playwright-cli/J-<id>.webm"
-        VIDEO_DEST="qa-videos/pr<N>/J-<id>.webm"
-        SIDECAR="qa-test-progress.J-<id>.json"
-        if [ "$RESULT" = "PASS" ]; then
-          rm -f "$VIDEO_SRC"                  # discard — no video evidence needed for PASS
-        else
-          # FAIL or BLOCKED — move video and record in sidecar
-          if [ -s "$VIDEO_SRC" ]; then
-            mv "$VIDEO_SRC" "$VIDEO_DEST"
-            # Append video entry to the already-written sidecar:
-            python3 - "$VIDEO_DEST" "$SIDECAR" <<'PYEOF'
-import json, sys
-dest, sidecar_path = sys.argv[1], sys.argv[2]
-data = json.load(open(sidecar_path))
-data.setdefault("videos", []).append({
-    "file": dest,
-    "description": "Full journey recording",
-    "partial": False
-})
-json.dump(data, open(sidecar_path, "w"), indent=2)
-PYEOF
-          else
-            echo "WARNING: video file missing or empty — recording may have failed"
-          fi
-        fi
-
-  If this agent handles multiple journeys (a group): run steps 10–11 after each journey,
-  then restart from step 2 for the next journey before navigating to its entry point.
-
-  IMPORTANT — Do NOT write directly to qa-test-progress.json (concurrent agents will corrupt it).
-  Instead, write each journey result to its own sidecar file:
-    qa-test-progress.<id>.json   (e.g. qa-test-progress.J-001.json)
-
-  Sidecar file format:
-  {
-    "journey_id": "<id>",
-    "result": "PASS" | "FAIL" | "BLOCKED",
-    "steps": [{"step_index": N, "action": "...", "observation": "...", "screenshot_file": "..."}],
-    "server_verification_output": "<output or null>",
-    "bugs": [{"title": "...", "severity": "...", "root_cause_file": "...", "root_cause_line": N, "screenshot_file": "..."}],
-    "screenshots": [{"file": "...", "description": "..."}],
-    "videos": [{"file": "qa-videos/pr<N>/J-<id>.webm", "description": "Full journey recording", "partial": false}]
-  }
-
-  videos[] is [] for PASS journeys (video was deleted). Set partial: true if the file was
-  crash-recovered from .playwright-cli/ without a clean video-stop.
-
-  If this agent handles multiple journeys (a group), write one sidecar file per journey.
-
-  Crash / timeout protocol: If any step throws an unrecoverable error, write the sidecar with
-  result='BLOCKED', note the error in steps, close the browser, and return. Never leave
-  the sidecar file unwritten — the main session checks for it to detect completion.
-
-  Return to main session (≤ 200 words):
-  - Result: PASS / FAIL / BLOCKED
-  - Bugs found: one-line per bug with severity
-  - Screenshots saved: filenames only
-  - Blockers: anything that stopped the journey early
-  - Sidecar files written: list filenames"
-)
-
-**After each batch completes**, merge all sidecar files into `qa-test-progress.json`:
-```python
-import json, os
-from glob import glob
-
-main = json.load(open("qa-test-progress.json"))   # MUST load before the loop
-for sidecar_file in glob("qa-test-progress.J-*.json"):
-    data = json.load(open(sidecar_file))
-    # journeys is a dict keyed by journey_id
-    main["journeys"][data["journey_id"]] = {
-        "result": data["result"],
-        "steps": data["steps"],
-        "server_verification_output": data["server_verification_output"],
-    }
-    main["bugs_found"].extend(data["bugs"])
-    main["screenshots"].extend(data["screenshots"])
-    main["videos"].extend(data.get("videos", []))
-    result_key = data["result"].lower()   # "pass" | "fail" | "blocked"
-    main["summary"][result_key] = main["summary"].get(result_key, 0) + 1
-    os.remove(sidecar_file)   # clean up after merging
-json.dump(main, open("qa-test-progress.json", "w"), indent=2)
-```
-
-Handle missing sidecar (agent crashed before writing it): after all agents return, check that a sidecar exists for every dispatched journey. For any journey with no sidecar, write a synthetic BLOCKED entry directly into `main["journeys"]` before saving.
-```
-
-**After each group agent returns**, print one group summary line — groups may arrive out of order:
-
-```
-[Group 1 — server_id=42]  J-001 PASS | J-001-V1 PASS
-[Group 2 — server_id=55]  J-002 FAIL — <bug one-liner> | J-002-V1 PASS
-[Group 3 — site_id=17]    J-003 BLOCKED — <reason>
-```
-
-Within each group agent, the base journey runs first, then its variants sequentially.
-
----
-
-## Phase 5B: Multi-agent Mode
-
-Group journeys by seed data conflicts first:
-- Journeys sharing the same `server_id` or `site_id` → run sequentially within a group
-- Independent journeys → run in parallel across groups
-
-Dispatch all groups in a **single message**:
-
-```
-# One Agent() call per group — all calls in ONE message
-Agent(description="Execute J-001 + J-001-V1 (share server_id=42)", prompt="...")
-Agent(description="Execute J-002 + J-002-V1 (share server_id=55)", prompt="...")
-Agent(description="Execute J-003 (standalone, site_id=17)", prompt="...")
-```
-
-Each agent uses the same template as Pipeline Mode (sidecar file and crash protocol apply identically — no browser lock needed since playwright-cli gives each agent its own browser process). After all agents return, run the sidecar merge pseudocode from Phase 5A to collect results into `qa-test-progress.json`. Check for missing sidecars (agent crash) and write synthetic BLOCKED entries for any journey with no sidecar.
-
----
-
-## Phase 5C: Interactive Mode
-
-> **No automated video recording in Interactive Mode.** Browser sessions are manual, so playwright-cli video recording does not apply. If you want video evidence for a FAIL journey, screen-record the session yourself and drop the file into `qa-videos/pr<N>/` before Phase 7 uploads.
-
-The agent is a **test guide**. You perform every browser action. The agent tells you exactly what to do, records what you report, and tracks results in `qa-test-progress.json`.
-
-### Guide Format
-
-For each journey, the agent opens a new section:
-
-```
-══════════════════════════════════════════════════════════════
-Journey J-001: "Paid user installs PHP 8.3 on Nginx server"
-Actor:  Paid user  (use your paid test account)
-Server: ID 42 — Nginx stack, provisioned
-══════════════════════════════════════════════════════════════
-
-STEP 1 of 5 — Navigate
-  → Go to: <staging-url>/servers/42/php
-  → What do you see? Type "done" when page loaded, or "issue: <what happened>"
-```
-
-After your response, the agent acknowledges and advances:
-
-```
-STEP 2 of 5 — Click
-  → Click the "Install PHP" button
-  → Did a panel or modal open? (yes / no / describe what appeared)
-```
-
-After the final step:
-
-```
-──────────────────────────────────────────────────────────────
-EXPECTED OUTCOME:
-  PHP 8.3 appears in the installed PHP list with status "Active"
-
-SERVER VERIFICATION (required — run on managed server via Command Runner):
-  → In xCloud: open Server 42 > Management > Commands
-  → Run this command: php8.3 --version
-  → Paste the output here (or type "skipped" with a reason):
-
-RESULT:
-  Type one of: PASS / FAIL / BLOCKED
-  Notes (optional — describe anything unexpected):
-──────────────────────────────────────────────────────────────
-```
-
-The agent records your input and moves to the next journey.
-
-### In-Journey Commands
-
-Type any of these at any prompt during Interactive Mode:
-
-| Command | Effect |
-|---|---|
-| `done` | Current step complete, advance to next |
-| `skip` | Skip this journey (agent asks reason, records as BLOCKED) |
-| `bug: <description>` | Record a bug mid-journey without completing remaining steps |
-| `note: <text>` | Add a note to the current step |
-| `end session` | Stop all remaining journeys and proceed to Phase 6 |
-
-### Failure Handling
-
-When you report an issue, the agent asks for classification:
-
-```
-Failure noted at Step 3.
-
-What happened?
-  1. Element not found / button missing from page
-  2. Got an error message — paste it
-  3. Page crashed or reloaded unexpectedly
-  4. Wrong data or state shown
-  5. Other — describe
-
-This determines the root cause category in the report.
-```
-
-The agent records the failure, marks the journey FAIL, and moves to the next journey without waiting.
-
-### Server Verification in Interactive Mode
-
-For every journey with a non-null `server_verification` field, the step is **mandatory** — it is not optional even in Interactive Mode. "UI showed success" is not evidence. The Command Runner output is the evidence.
-
-If you cannot access Command Runner (server not connected, etc.), type `blocked: <reason>`. The journey is marked BLOCKED, not FAIL.
-
----
-
-## Phase 6: Gap Evaluation
-
-After all journeys complete (any mode), check for coverage gaps before writing the report.
-
-### Coverage Checks
-
-1. **File coverage** — every changed file from Phase 0 maps to at least one completed journey
-2. **Consumer coverage** — every cross-feature consumer found in Phase 0 has a regression journey
-3. **Variant coverage** — every billing guard and every permission check has a blocked-user variant
-4. **Blocked cap** — if more than 2 journeys are BLOCKED, convert at least one to a partial test:
-   - Create seed data via Tinker, test the UI and policy behavior without real server-side execution
-   - Mark as "Partially tested via Tinker-generated data — server execution not verified"
-
-### Minimum Gap Rule
-
-**Find at least 2 gaps.** If you find zero, describe your coverage check methodology before concluding coverage is complete — premature zero-gap declarations are a common failure mode. Common missed gaps:
-- Forgot to test the feature with pre-existing data (only tested on fresh seed)
-- Forgot to test browser refresh after a state change
-- Forgot the migration behavior on rows that existed before the migration
-
-### Gap Journeys
-
-For each gap found, create a new journey and append it to `qa-test-progress.json`. Then apply the same seed-conflict grouping as Phase 5A/5B — do not run gap journeys strictly one-at-a-time:
-
-1. Group gap journeys by shared seed records
-2. Independent groups → dispatch in a **single message** (parallel)
-3. Within each group → run sequentially (base before variants)
-
-```
-# Example: 3 gap journeys across 2 independent groups — ONE message:
-Agent(description="Execute gap J-G001 + J-G002 (share server_id=42)", prompt="...")
-Agent(description="Execute gap J-G003 (standalone)", prompt="...")
-```
-
-Gap journeys use the same agent template as Phase 5A.
-
-Print: `[Phase 6] <N> gaps found — dispatching <N> journeys in <N> groups`
-
----
-
-## Phase 7: Reporting + Cleanup
-
-### Step 7.1 — Upload Screenshots and Videos (BLOCKING — run first, before report)
-
-```bash
-# 1. Upload screenshots
-SCREENSHOT_JSON=$(python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
-  --dir qa-screenshots/pr<N> --pr <N> --json)
-SCREENSHOT_EXIT=$?
-
-# 2. Upload videos (FAIL/BLOCKED journeys only — PASS videos were deleted by journey agents)
-VIDEO_JSON="{}"
-VIDEO_EXIT=0
-if [ -d "qa-videos/pr<N>" ] && ls qa-videos/pr<N>/*.webm qa-videos/pr<N>/*.mp4 qa-videos/pr<N>/*.mov 2>/dev/null | grep -q .; then
-  VIDEO_JSON=$(python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py \
-    --dir qa-videos/pr<N> --pr <N> --json)
-  VIDEO_EXIT=$?
-fi
-```
-
-**Both uploads must complete before spawning the report agent.** Write Cloudinary URLs back into `qa-test-progress.json`:
-
-```python
-import json, os
-
-screenshot_url_map = json.loads(SCREENSHOT_JSON)
-video_url_map      = json.loads(VIDEO_JSON)
-
-main = json.load(open("qa-test-progress.json"))
-
-for s in main["screenshots"]:
-    filename = os.path.basename(s["file"])
-    if filename in screenshot_url_map:
-        s["cloudinary_url"] = screenshot_url_map[filename]
-
-for v in main.get("videos", []):
-    filename = os.path.basename(v["file"])
-    if filename in video_url_map:
-        v["cloudinary_url"] = video_url_map[filename]
-
-json.dump(main, open("qa-test-progress.json", "w"), indent=2)
-```
-
-After write-back, screenshot entries have `cloudinary_url` and FAIL/BLOCKED video entries have `cloudinary_url`. The report agent reads these fields; if absent, falls back to local `file` path.
-
-- `SCREENSHOT_EXIT` non-zero → partial screenshot failure; run write-back with what uploaded, warn user, continue.
-- `VIDEO_EXIT` non-zero → partial video failure; same — write back partial results, warn, continue.
-- `qa-videos/pr<N>/` empty or missing → video upload step skipped silently (all journeys PASSED).
-
-**This is the only permitted upload method.** Never write a loop, curl command, or custom upload script.
-
-### Step 7.2 — Report + UX Critique + Cleanup (spawn all in parallel after upload)
-
-```
-Agent(
-  description="Write QA report for PR #<N>",
-  prompt="Write the final QA report.
-  1. Read qa-test-progress.json completely — this is your only data source
-  2. Load references/report-template.md for the mandatory structure
-  3. Map journeys to report sections: journey ID = section heading
-     Format: '## J-001: <name> — PASS'  or  '## J-002: <name> — FAIL'
-  4. Embed screenshots: for each screenshot in qa-test-progress.json screenshots array,
-     use screenshots[i].cloudinary_url if present, otherwise fall back to screenshots[i].file
-     (local path). Never hardcode paths — always read from the screenshots array.
-  4b. Embed videos: for each entry in qa-test-progress.json videos array, embed under the
-     corresponding FAIL or BLOCKED journey section only:
-     - Has cloudinary_url → **Video evidence:** [Watch full journey recording](<cloudinary_url>)
-     - partial: true → **Video evidence (partial — agent crashed):** [Watch partial recording](<cloudinary_url>)
-     - No cloudinary_url (upload failed) → **Video evidence (upload failed — local only):** `<file>`
-     PASS sections never have video entries — do not add a video line to PASS sections.
-  5. Every FAIL section needs: root cause file + line number
-  6. Every PASS section needs: at least one screenshot as evidence
-  7. Section 9 — Security Concerns (MANDATORY — never skip or write 'N/A' without checking):
-     a. Load references/security-testing.md for the IDOR report table format
-     b. Pull qa-test-progress.json → security_findings array. For each entry, write a
-        structured security finding using the format from security-testing.md
-     c. Pull any journey tagged 'security' or 'idor' — include their PASS/FAIL results
-        and evidence (screenshots + curl/Playwright response) in the section
-     d. Include the IDOR report table: | Resource | URL Tested | User A | User B | Expected | Actual |
-     e. If security_findings is empty AND no IDOR journeys exist: write
-        "No security concerns identified. [list what was checked and why no risks were found]"
-        — do NOT write just "No security concerns found" without explanation
-  8. Section 5.5 — Logic Flaws: pull qa-test-progress.json → blv_findings array
-     and write each finding using the Logic Flaw format from report-template.md
-  9. Section 5.6 — Human Logic Findings: pull qa-test-progress.json → hlt_findings array.
-     For each finding, write it using the Human Logic format from report-template.md.
-     Group by lens (Expectation, Feedback, Error Intelligibility, Reversibility, Consistency).
-     If hlt_findings is empty AND no first-time-user journeys exist: write
-     'No human logic issues identified. [state which lenses were checked and why no issues found]'
-     — do NOT write just 'None' without explaining what was checked.
-  10. Section 5.7 — Translation / i18n Issues: pull qa-test-progress.json → i18n_findings array.
-      Group by type: HARDCODED_STRING, MISSING_KEY, UNTRANSLATED_KEY, NAMING_CONVENTION.
-      For each finding write: file:line, the string or key, affected languages, recommendation.
-      If i18n_findings is empty: write 'No translation issues found. [state flag (d) was false
-      or list the string changes checked and confirm all use translation helpers with existing keys]'
-  11. Write report to QA-Report-PR-<N>.md
-  12. Run post-report validation checklist from report-template.md
-  13. Return: file path, journey count, PASS/FAIL/BLOCKED counts, security findings count,
-      hlt findings count, i18n findings count, validation failures"
-)
-```
-
-### UX Improvement Recommendations (mandatory for UI PRs — spawn in same message as report agent)
-
-If the PR includes UI changes (flag c from Phase 0), spawn this agent. Skip only for backend-only PRs.
-
-```
-Agent(
-  run_in_background=true,
-  description="UX improvement recommendations for PR #<N>",
-  prompt="Write actionable UX improvement recommendations for PR #<N>.
-
-  1. Read qa-test-progress.json completely:
-     - hlt_findings array: pre-analysis findings from the HLT agent (Phase 0)
-     - journeys dict: look at every first-time-user journey result — PASS/FAIL/BLOCKED
-       and the observation notes from each step
-     - screenshots array: look at the actual UI screenshots from staging
-  2. For each confirmed hlt_finding (severity critical or high):
-     Write a concrete improvement recommendation:
-     - What the current UI does
-     - Why it confuses or risks harm for the user
-     - Specific fix: exact copy change, interaction pattern, or component change
-     - Effort estimate: low (copy change only) | medium (component change) | high (flow redesign)
-  3. For each first-time-user journey that returned FAIL or BLOCKED:
-     Write a recommendation explaining what the user encountered and what should change.
-  4. Spot-check the screenshots: look for loading states, empty states, error states.
-     Flag any screenshot where the UI gives the user no clear signal about what happened.
-  5. Format as a prioritized list — critical/high first, then medium, then low.
-     Maximum 8 recommendations. Each must be specific and actionable, not generic.
-  6. Append to QA-Report-PR-<N>.md under a section:
-     ## UX Improvement Recommendations
-     ### Critical / High Priority
-     ### Medium Priority
-     ### Low Priority (Polish)
-  7. Return: count of recommendations by severity"
-)
-```
-
-### Step 7.3 — Report Reassessment (blocking — run after report + UX agents return)
-
-Spawn one final agent to read the completed report and check for gaps before cleanup runs.
-**Cleanup must NOT start until this agent returns clean.**
-
-```
-Agent(
-  description="Report reassessment for PR #<N>",
-  prompt="Reassess the QA report for PR #<N> for completeness and accuracy.
-
-  Read both sources in full:
-  - QA-Report-PR-<N>.md (the completed report)
-  - qa-test-progress.json (the ground truth from testing)
-
-  Run every check below. Return a numbered gap list — be specific (section name + what is missing).
-  If zero gaps found, return: 'REPORT COMPLETE — no gaps found.'
-
-  COVERAGE CHECKS:
-  1. Journey coverage — every journey ID in qa-test-progress.json['journeys'] has a
-     corresponding '## J-<ID>:' heading in the report. Flag any missing journey section.
-  2. Bug completeness — every entry in qa-test-progress.json['bugs_found'] has a
-     '### Bug #N:' section with all required fields (Severity, Root Cause file+line,
-     Steps to Reproduce, Expected Result, Actual Result, embedded screenshot).
-     Flag any bug missing a field.
-  3. Finding arrays reflected — for each non-empty array in qa-test-progress.json:
-     - blv_findings → Section 5.5 present with matching finding count
-     - hlt_findings → Section 5.6 present with matching finding count
-     - i18n_findings → Section 5.7 present with matching finding count
-     - security_findings → Section 9 present with matching finding count
-     Flag any array that has entries but no corresponding report section, or where
-     the section says 'None' but the array is non-empty.
-  4. Screenshot evidence — every PASS journey section has at least one embedded screenshot.
-     Every FAIL journey section has at least one embedded screenshot at the failure point.
-     Flag any journey section with no images at all.
-  5. Section completeness — all 15 required sections are present (Title, PR Summary,
-     Test Environment, Tests Performed, Bugs Found, 5.5 Logic Flaws, 5.6 Human Logic,
-     5.7 i18n Issues, Observations, Regression Issues, Performance, Security, Areas Not
-     Fully Tested, Screenshots Summary, Test Data Cleanup, Final Verdict).
-     Flag any missing section.
-  6. Final verdict — the verdict (PASS / FAIL / PASS WITH OBSERVATIONS) is consistent
-     with the bugs and findings in the report. If critical or high severity bugs exist,
-     verdict must be FAIL. Flag any verdict that contradicts the findings.
-  7. i18n staging verification — for every HARDCODED_STRING or MISSING_KEY finding in
-     i18n_findings: is there a screenshot in the report showing the actual string on staging?
-     If a critical/high i18n finding has no staging evidence, flag it.
-  8. Video evidence in FAIL/BLOCKED sections — for each journey marked FAIL or BLOCKED in
-     qa-test-progress.json, check if qa-test-progress.json['videos'] contains an entry
-     whose `file` field includes that journey's ID string (e.g. a videos[] entry with
-     `"file": "qa-videos/pr123/J-002.webm"` belongs to journey J-002). If such an entry
-     exists, verify the corresponding report section contains a "Video evidence:" line with
-     a link. Flag any FAIL/BLOCKED section that has a matching video entry in the JSON but
-     no video link in the report.
-
-  Return format:
-  GAPS FOUND:
-  1. [Section] [what is missing or wrong]
-  2. ...
-
-  OR: REPORT COMPLETE — no gaps found."
-)
-```
-
-If the reassessment returns gaps:
-- Fix each gap in `QA-Report-PR-<N>.md` before proceeding to Cleanup
-- For missing screenshots: use `playwright-cli -s=gap-fix navigate …` / `screenshot` to capture the evidence, upload, and embed
-- Print: `[Phase 7] Report reassessment: <N> gaps found and fixed` or `[Phase 7] Report reassessment: clean`
-
-### Cleanup
-
-Delete all seed records from `qa-test-progress.json` seed_data array in **reverse order** (child records before parents):
-
-```php
-php artisan tinker
-Site::find(<id>)->forceDelete();    // child first
-Server::find(<id>)->forceDelete();  // parent second
-```
-
-Verify no orphaned records remain:
-
-```php
-echo Server::find(<id>) ? 'EXISTS — not deleted!' : 'Deleted OK';
-```
-
-Log cleanup results in the report "Test Data Cleanup" section.
-
-> **Note:** `qa-screenshots/` and `qa-videos/` are kept intentionally — they are the permanent evidence archive for the PR. Only seed database records (servers, sites) are deleted during cleanup.
-
----
-
-## Server Architecture Awareness
-
-xCloud manages **two types of servers** — never confuse them:
-
-| Server | What it is | How to access |
-|---|---|---|
-| **xCloud app server** | Hosts the xCloud platform (staging.tmp1.dev) | SSH via user-provided credentials |
-| **Managed server** | User-owned servers managed by xCloud (e.g., OLS at 107.175.x.x) | **Command Runner** in xCloud UI (Server > Management > Commands) |
-
-Scripts and operations in `app/Scripts/` run on **managed servers**, not the app server. To verify that a script ran correctly, use Command Runner — not SSH to the app server. Screenshot the Command Runner output as your server-side evidence.
-
----
-
-## Evidence Rules
-
-Every journey result — PASS or FAIL — must have evidence. Evidence = output from actually running the test on staging.
-
-**What counts:**
-- Screenshots from Playwright or from you (Interactive Mode) showing the UI state
-- Command Runner output showing server-side state
-- Tinker query results showing database state
-- Browser console output showing errors or clean output
-
-**What does NOT count:**
-- "The code handles this case" — that is code review, not QA
-- "The diff shows the fix" — reading code is not testing
-- "Based on the implementation..." — if you didn't run it on staging, it is not evidence
-- UI toast or status badge alone (without Command Runner confirmation for server-modifying operations)
-
----
-
-## Verdict Rules
-
-| Condition | Verdict |
-|---|---|
-| All journeys PASS, logic correct | **PASS** |
-| All journeys PASS, minor edge-case observations | **PASS with observations** |
-| Core feature logic is wrong (wrong threshold, misleading output, incorrect behavior) | **FAIL — logic flaw** |
-| User explicitly confirms wrong logic is intentional | **CONDITIONAL PASS** (document confirmation) |
-| Any journey FAIL with critical or high severity bug | **FAIL** |
-
-A logic flaw is a FAIL — not an observation. If the feature produces misleading results for users, the feature is broken even if the code runs without errors.
-
----
-
-## Playwright CLI (for Pipeline and Multi-agent modes)
-
-Inside testing sub-agents, all browser interactions use **playwright-cli via Bash** — NOT the Playwright MCP plugin. This delivers ~4× token reduction because:
-- Snapshots are compact YAML (not verbose accessibility trees)
-- Screenshots are written to disk and never injected into context unless explicitly read
-- No MCP schema overhead per tool call
-
-Core interaction cycle: **navigate → snapshot (read YAML) → interact → snapshot → screenshot**
-
-playwright-cli command reference:
-
-Always pass `-s=<session-name>` (e.g. `-s=J-001`) to every command. This pins all calls for a journey to one isolated browser profile — cookies, storage, and state never leak between parallel agents.
-
-| Command | Purpose |
-|---|---|
-| `playwright-cli -s=<name> navigate <url>` | Navigate to a URL |
-| `playwright-cli -s=<name> snapshot` | Compact YAML listing element refs — read to determine next action |
-| `playwright-cli -s=<name> click <ref-or-selector>` | Click element by ref (e.g. `e21`) or text/CSS selector |
-| `playwright-cli -s=<name> fill "<selector>" "<value>"` | Fill an input field |
-| `playwright-cli -s=<name> select "<selector>" "<value>"` | Choose a dropdown option |
-| `playwright-cli -s=<name> screenshot --path <file>` | Save screenshot to disk |
-| `playwright-cli -s=<name> video-start <filename> --size=1280x800` | Start recording — output goes to `.playwright-cli/<filename>` |
-| `playwright-cli -s=<name> video-chapter "<title>"` | Insert chapter marker (accepts `--description`, `--duration` flags) |
-| `playwright-cli -s=<name> video-stop` | Stop recording and write `.webm` — **must run before `close`** |
-| `playwright-cli -s=<name> close && pkill -f chromium 2>/dev/null \|\| true` | Close browser — MANDATORY after `video-stop`; pkill ensures the process is gone |
-
-Element refs (e.g. `e21`) are ephemeral — always re-snapshot after any DOM mutation before the next interaction.
-
-> Load `references/playwright-mcp-guide.md` inside testing sub-agents for auth flow, wait strategies, and xCloud UI patterns.
-
-### Browser Isolation in Parallel Modes
-
-playwright-cli spawns a **separate browser process per agent** — there is no shared singleton. Each parallel agent gets its own browser session, its own cookie jar, and an independent lifecycle. A close or crash in one agent does not affect others. Passing `-s=J-<id>` (the journey ID as the session name) on every command adds explicit profile-level isolation on top of process isolation, ensuring cookies and local storage can never bleed between journeys even if two agents happen to share a machine user account.
-
-All three phases run fully concurrently:
-
-| Phase | Parallel? |
-|---|---|
-| Prep (reading journey YAML, SSH seed checks) | Yes — fully concurrent |
-| Browser (navigate → interact → screenshot → close) | Yes — each agent owns its own browser |
-| Post-browser (sidecar write, cleanup) | Yes — fully concurrent |
-
-No `qa-browser.lock` file, no timeout, no serialization — parallel journey agents run side by side.
-
----
-
-## Common Mistakes
-
-| Mistake | Fix |
-|---|---|
-| Running browser tests in the main session | Browser runs inside sub-agents (Pipeline/Multi-agent) or by you (Interactive) |
-| Writing a screenshot upload loop | One command only: `upload_screenshots.py --dir ... --pr ...` |
-| Spawning report agent before upload | Upload must complete (exit 0 checked) before report agent runs |
-| Writing "No security concerns" without explanation | Section 9 must state what was checked and why no risks apply |
-| Security findings lost after BLV agent returns | BLV+security agent writes to qa-test-progress.json — report reads from there |
-| Journey agents writing qa-test-progress.json concurrently | Agents write per-journey sidecar files (qa-test-progress.J-001.json); main session merges after each batch |
-| Using MCP browser tools instead of playwright-cli | All browser interactions in journey agents use playwright-cli via Bash — not mcp__plugin_playwright |
-| Browser window left open after journey | `playwright-cli close` ends the session but may leave the Chromium process running — always follow it with `pkill -f chromium 2>/dev/null \|\| true` |
-| Reading screenshot files into context to verify UI state | Screenshots are on disk; avoid reading them inline — use playwright-cli snapshot YAML to determine state |
-| Phase 5A checkpoint overwrites blv_findings / security_findings | Checkpoint MERGES into existing file — never full-overwrite; existing keys take priority |
-| Re-running skill on same PR without warning | Phase 5A checks for existing results and asks "overwrite or abort" before writing |
-| Cloudinary upload done but report still uses local paths | After upload exits 0, write cloudinary_url back into screenshots[] in qa-test-progress.json |
-| Leaving browser open after journey | Run `playwright-cli close && pkill -f chromium 2>/dev/null || true` after every journey — even FAIL/BLOCKED |
-| Treating UI toast as server-side proof | Run Command Runner verification, screenshot the output |
-| Creating seed data during testing | Seed data is created in Phase 2 — before any browser opens |
-| Journeys without variants | Every journey needs at least one variant (blocked user or different role) |
-| Skipping gap evaluation | Phase 6 is mandatory — if you find zero gaps, you didn't look |
-| More than 2 BLOCKED journeys without partial testing | Convert at least one to partial test via Tinker + UI |
-| Interactive mode: skipping server verification | Even in manual mode, Command Runner output is required for server-modifying steps |
-| Wrong Tinker enum values | Always load `references/environment-setup.md` before creating seed records |
-| Confirming journeys without checking feature map | Cross-reference `xcloud-feature-map.md` to catch missing UI pages |
-| Reading code instead of testing | Log in, perform the action, screenshot the result. Code reading = review, not QA. |
-| `playwright-cli close` before `video-stop` | `video-stop` must run first — closing browser before stopping recording produces a corrupt or zero-byte `.webm` |
-| Keeping PASS journey videos | Delete `.playwright-cli/J-<id>.webm` for PASS journeys immediately — only FAIL/BLOCKED videos are moved to `qa-videos/` |
-| Uploading videos before screenshots in Phase 7.1 | Screenshot upload runs first; video upload second — both complete before report agent spawns |
-| Missing `videos: []` in checkpoint schema | Phase 5A checkpoint must include `"videos": []` or the merge pseudocode `extend` will KeyError |
-| Skipping video upload when `qa-videos/` is empty | Check directory exists and is non-empty before running video upload — skip silently if no FAIL/BLOCKED videos |
-| playwright-cli not on PATH | Phase 0.1b pre-flight installs it automatically — never assume it's present on the machine |
-| Skipping adversarial journeys for forms and async buttons | Every form gets a boundary-value + invalid-input journey; every async action button gets a double-submit + interrupted-flow journey — these are required, not optional |
-| Skipping HLT agent for UI PRs | Any PR with Vue/Blade changes gets the HLT agent — it runs in background, costs little, and catches critical UX failures before users hit them |
-| Skipping i18n agent when strings changed | Any PR adding/modifying user-facing strings gets the i18n agent — hardcoded strings and missing keys break non-English users silently |
-| Starting cleanup before reassessment returns clean | Step 7.3 is a hard gate — cleanup must not run while gaps exist in the report |
-| Reassessment agent finding gaps but not fixing them | Every gap the reassessment finds must be fixed in the report before cleanup; don't proceed with known holes |
-| First-time user journey skips "observe" steps | These steps are mandatory — snapshot the page and note what a new user reads before any click, not just what happens after |
-| HLT finding not verified on staging | Every critical/high HLT finding must have a screenshot from a first-time-user journey proving it exists on staging — not just "code says so" |
-| Writing "No human logic issues" without checking all 5 lenses | Section 5.6 must name each lens and state why it found nothing — a blank "none" is always wrong |
-| "Verified by reviewing the diff" as evidence | Trigger the actual scenario on staging and observe the result |
-
----
-
-## Progress Checkpoints
-
-Print a one-line status at every phase boundary and every journey result. Never go more than 60 seconds without output.
-
-```
-[Phase 0] PR #<N> validated — <N> files, <N> UI pages affected
-[Phase 0] playwright-cli verified / installed
-[Phase 0] Analysis + deploy agents spawned in parallel
-[Phase 0] Deploy confirmed — branch <name>, commit <hash>
-[Phase 1] Generated <N> journeys (<N> variants) — waiting for confirmation
-[Phase 1] Journeys confirmed
-[Phase 2] Seed data: <N> records created and verified
-[Phase 3] Round <N> — <N> questions sent
-[Phase 3] Knowledge gathering complete
-[Phase 4] Mode selected: Pipeline / Multi-agent / Interactive
-[Phase 5] [Group N] J-<ID> PASS | J-<ID> FAIL — <bug>    ← one line per group as it arrives
-[Phase 6] Gap evaluation: <N> gaps found, <N> journeys added
-[Phase 7] Uploading <N> screenshots + <N> videos... (blocking — waiting for exit 0)
-[Phase 7] Report agent + UX agent spawned in parallel
-[Phase 7] Report written: QA-Report-PR-<N>.md
-[Phase 7] Reassessment: <N> gaps found / clean
-[Phase 7] Cleaning up <N> seed records...
-[Phase 7] Cleanup complete
-```
+## Verdict (details in `references/report.md`)
+
+- **NEEDS CHANGES**: the primary claim fails; behaviour differs from what the PR or issue promises; a regression
+  versus `dev`; a role sees or changes what it must not; a task fails or an error is logged behind a success
+  screen; a logic flaw that makes the feature mislead users, even if the code "works".
+- **PARTIALLY VERIFIED**: a primary check could not run, or the bug could not be reproduced on `dev` first.
+- **READY TO MERGE**: every primary check and suspect passed with evidence, no failure mode worse than `dev`'s.
+- Problems that exist on `dev` too are **pre-existing findings**, listed separately, not PR failures, unless the
+  PR claims to fix them or makes them worse.

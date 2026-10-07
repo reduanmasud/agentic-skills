@@ -6,7 +6,7 @@ A collection of Claude Code skills for agentic workflows — QA testing, staging
 
 | Skill | Description |
 |-------|-------------|
-| **xcloud-test** | Comprehensive QA testing of a Pull Request on a staging environment — smoke, sanity, regression, security, IDOR, API, multi-role, and performance testing with Playwright browser automation and detailed reporting |
+| **xcloud-test** | Deep QA of an xCloud pull request on the xcdev lab: expected behaviour written before reading the code (oracle), a before/after comparison against the base branch, real servers and seeded roles, a silent-failure sentinel (logs, failed jobs, task exit codes), a black-box explorer, language checks across 20 locales, and a validated report. Falls back to a plain SSH staging server without the lab |
 
 ## Installation
 
@@ -58,10 +58,11 @@ rm -rf /tmp/agentic-skills
 
 ## Updating
 
-To get the latest version of a skill, re-run the install steps — it will overwrite the existing `SKILL.md` with the latest version.
+Remove the installed copy first: `cp -r` into an existing folder nests the new copy inside it and leaves deleted reference files behind.
 
 ```bash
 git clone https://github.com/reduanmasud/agentic-skills.git /tmp/agentic-skills
+rm -rf ~/.claude/skills/xcloud-test
 cp -r /tmp/agentic-skills/skills/xcloud-test ~/.claude/skills/xcloud-test
 rm -rf /tmp/agentic-skills
 ```
@@ -72,15 +73,19 @@ Once installed, invoke the skill in Claude Code:
 
 ```
 /xcloud-test 4214
+/xcloud-test 4214 interactive
 ```
 
-Where `4214` is the PR number you want to QA test.
+Where `4214` is the PR number you want to QA test. `interactive` hands the browser steps to you while the skill
+checks the server around each one. Run state goes to `~/.xcloud-qa/pr<N>/`, outside the repository.
 
 ## Requirements
 
-- **Claude Code** with Playwright MCP server configured (for browser-based UI testing)
-- **SSH access** to the staging server
-- **GitHub CLI** (`gh`) for PR analysis
+- **Claude Code** with the **xcdev MCP** connected (lab access: previews, servers, seeded accounts, page checks)
+- **GitHub CLI** (`gh`) for PR analysis, and **python3**
+- **Playwright** in the xCloud checkout's `node_modules` (for `scripts/lab-flow.mjs`, browser flows beyond `page_check`)
+- Optional: the **xcloud-brain** MCP (product history and support tickets for the oracle)
+- Without the lab: SSH access to a staging server (`references/staging-fallback.md`)
 
 ## Contributing
 
