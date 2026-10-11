@@ -51,6 +51,30 @@ def load_results(run: Path) -> dict:
     return out
 
 
+def screenshots(r: dict) -> list:
+    return [e for e in (r.get("evidence") or []) if e.get("kind") == "screenshot"]
+
+
+def public(url) -> bool:
+    return bool(url) and url.startswith("http") and "evidence_url" not in url
+
+
+def warnings_for(cid: str, r: dict) -> list:
+    """Screenshot gaps: reported, never blocking (some checks have nothing to show)."""
+    w = []
+    shots = screenshots(r)
+    if r.get("result") in ("PASS", "FAIL") and not shots and not r.get("no_screenshot"):
+        w.append(f"{cid}: no screenshot and no no_screenshot reason")
+    for e in shots:
+        if not e.get("url") and not e.get("path"):
+            w.append(f"{cid}: screenshot entry has neither url nor path")
+        elif e.get("path") and not Path(e["path"]).expanduser().exists():
+            w.append(f"{cid}: screenshot file missing: {e['path']}")
+        elif not public(e.get("url")):
+            w.append(f"{cid}: screenshot not published yet ({e.get('path') or e.get('url')})")
+    return w
+
+
 def problems_for(cid: str, r: dict) -> list:
     p = []
     if "_invalid" in r:
@@ -79,10 +103,13 @@ def merge(run: Path) -> int:
     plan, results = load_plan(run), load_results(run)
     problems = [f"{cid}: in plan.md but no results/{cid}.json" for cid in plan if cid not in results]
     problems += [f"{cid}: result without a plan.md line" for cid in results if cid not in plan]
+    warnings = []
     for cid, r in results.items():
         problems += problems_for(cid, r)
+        warnings += warnings_for(cid, r)
     counts = {k: sum(1 for r in results.values() if r.get("result") == k) for k in ICON}
-    print(json.dumps({"checks": len(plan), "results": len(results), **counts, "problems": problems}, indent=1))
+    print(json.dumps({"checks": len(plan), "results": len(results), **counts, "problems": problems,
+                      "screenshot_warnings": warnings}, indent=1))
     return 1 if problems else 0
 
 
@@ -108,8 +135,15 @@ def ev_lines(r: dict) -> list:
     out = []
     for e in r.get("evidence") or []:
         line = f"- {e.get('kind', 'evidence')}: {e.get('summary', '')}"
+        if e.get("env"):
+            line += f" ({e['env']})"
+        if e.get("kind") == "screenshot" and public(e.get("url")):
+            out += [line, "", f"  ![{e.get('summary', 'screenshot')}]({e['url']})", ""]
+            continue
         if e.get("url"):
             line += f" — [link]({e['url']})"
+        elif e.get("path"):
+            line += f" — local: `{e['path']}` (not uploaded)"
         out.append(line)
         if e.get("excerpt"):
             out += ["  ```", *[f"  {x}" for x in str(e["excerpt"]).splitlines()[:15]], "  ```"]
@@ -144,6 +178,15 @@ def report(run: Path) -> int:
         comment += ["**Findings in this PR**"] + [f"{i}. {r.get('severity')} — {r.get('title')} ({r.get('id')})" for i, r in enumerate(this_pr, 1)] + [""]
     if pre:
         comment += ["**Pre-existing on dev** (follow-up, not blocking)"] + [f"- {r.get('title')} ({r.get('id')})" for r in pre] + [""]
+    shot_order = [r for r in this_pr] + [results[c] for c in order if plan.get(c, {}).get("primary") and results[c] not in this_pr]
+    shot_lines = []
+    for r in shot_order:
+        for e in screenshots(r):
+            if public(e.get("url")):
+                shot_lines.append(f"<details><summary>{r.get('id')} — {e.get('summary', '')} ({e.get('env', 'preview')})</summary>\n\n![{r.get('id')}]({e['url']})\n</details>")
+    if shot_lines:
+        comment += ["**Screenshots**", *shot_lines, ""]
+    unpublished = [f"{r.get('id')}" for r in results.values() for e in screenshots(r) if not public(e.get("url"))]
     comment += ["<summary: edit me> · Full report: <link>"]
 
     full = [f"# QA report — PR #{pr}", "", f"**Verdict: {v}**", ""]
@@ -162,6 +205,8 @@ def report(run: Path) -> int:
         full += ev_lines(r)
         if r.get("repro"):
             full += ["", "Repro:"] + [f"{i}. {s}" for i, s in enumerate(r["repro"], 1)]
+        if r.get("no_screenshot"):
+            full.append(f"- No screenshot: {r['no_screenshot']}")
         if r.get("notes"):
             full.append(f"\nNotes: {r['notes']}")
         full.append("")
@@ -171,7 +216,7 @@ def report(run: Path) -> int:
 
     (run / "comment.md").write_text("\n".join(comment) + "\n")
     (run / "report.md").write_text("\n".join(full) + "\n")
-    print(json.dumps({"verdict": v, "reasons": reasons, "report": str(run / "report.md"), "comment": str(run / "comment.md")}, indent=1))
+    print(json.dumps({"verdict": v, "reasons": reasons, "unpublished_screenshots": sorted(set(unpublished)), "report": str(run / "report.md"), "comment": str(run / "comment.md")}, indent=1))
     return 0
 
 

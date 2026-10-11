@@ -23,6 +23,12 @@ not what customers need. This skill finds the gap. Four rules come before any pr
    with a failed task is a FAIL.
 4. **Real servers, real roles, real paths.** Lab servers provisioned by the PR's own app, seeded accounts
    (`as`), requests through the site's own web server. Never a hand-made `Server::create()` row with a fake IP.
+5. **Every check leaves a screenshot.** Text excerpts prove the server side; the screenshot shows what the
+   customer sees. Each PASS/FAIL carries at least one `kind: "screenshot"` evidence entry of the dashboard page
+   that reflects the result (the setting, the site/server page, the task list, the error), on the preview and,
+   for `baseline` checks, on `ci/dev`. Only a check with nothing visible in any page may skip it, with
+   `no_screenshot: "<why>"` in its result. `results.py merge` lists every gap under `screenshot_warnings`
+   (it does not block): take the missing shots, or confirm the check truly has nothing to show.
 
 Lab tool names below are the xcdev MCP's (`mcp__xcdev__*`, load with ToolSearch). `references/lab.md` maps
 each need to a tool and lists the lab traps. Without lab access, use `references/staging-fallback.md`.
@@ -94,7 +100,11 @@ C-03  [role] user2 (team B) opens team A's server backups page            env: p
       expect (spec S-4): 403 or redirect, no data       baseline: same on ci/dev
       how: page_check as user2 + app_call GET /api/server/<A server id>/backups as user2 (id or uuid: whatever the route binds)
       server: q<N>-ng      sentinel: yes      source: suspect X-2
+      shot: /server/<uuid>/backups as user2 (preview + ci/dev)
 ```
+
+Every check names its `shot:`: the page (and account) whose screenshot proves the result. Server-side checks
+name the dashboard page that reflects that state; write `shot: none — <why>` only when no page shows it.
 
 Format matters (`scripts/results.py` parses it): each check starts `C-<nn>  [<tag>]`; tag the PR's primary
 claim `[primary]` and give each suspect's check `source: suspect …`; those decide the verdict.
@@ -147,9 +157,10 @@ customer can observe (say so in the report). Each writes `results/<check-id>.jso
 returning agent: `[C-03] FAIL — user2 reads team A backups (200, 3 rows)`.
 
 After all return: `python3 ~/.claude/skills/xcloud-test/scripts/results.py merge ~/.xcloud-qa/pr<N>`. It flags
-missing result files, PASS/FAIL without evidence, PASS results whose sentinel shows new errors, FAILs without
+missing result files, PASS/FAIL without evidence,  PASS results whose sentinel shows new errors, FAILs without
 repro steps, and anything that looks like a secret. Send each problem back to the agent that owns the check (or
-fix the file yourself when it is clerical) until `merge` exits 0.
+fix the file yourself when it is clerical) until `merge` exits 0. Then go through `screenshot_warnings`: send
+each one back for a shot unless the check really has no page that shows its result.
 
 ## Phase 5 — Skeptic pass
 
@@ -165,7 +176,9 @@ Add any new checks it proposes to `plan.md` and run them (Phase 4 rules). One sk
 ## Phase 6 — Report
 
 `python3 ~/.claude/skills/xcloud-test/scripts/results.py report ~/.xcloud-qa/pr<N>` renders `report.md` from the results (shape and verdict
-rules: `references/report.md`). Read it, fix the prose (summary, what this PR changes vs pre-existing), and
+rules: `references/report.md`). Screenshots must be viewable by the reader: publish `page_check` shots
+(`publish: true`, or `evidence_publish {id}` afterwards) and upload local `lab-flow.mjs` / `evidence/*.png` files with
+`scripts/upload_screenshots.py`; put the public URLs in the results before rendering, so the report embeds them. Read it, fix the prose (summary, what this PR changes vs pre-existing), and
 check every screenshot before it is shared: no secret on it. Then ask where it goes: PR comment (one comment,
 the compact form), KazTrack doc (full form, PR comment links to it), or local only. Never touch PR labels.
 

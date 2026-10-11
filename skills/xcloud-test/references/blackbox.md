@@ -41,7 +41,8 @@ see from the outside.
 
 For every problem: a result file `~/.xcloud-qa/pr<N>/results/BB-<nn>.json` in the executor schema
 (`references/executor.md`), with `"title"`, `"expected"` (from the spec or from what a customer would reasonably
-expect: say which), `"observed"`, `"repro"` and evidence. Run the same steps on the baseline environment
+expect: say which), `"observed"`, `"repro"` and evidence, including a screenshot of the problem as the customer sees it
+(Screenshots section of `references/executor.md`). Run the same steps on the baseline environment
 (`ci/dev` or the master environment) before you set `pre_existing`.
 
 Also append `BB-<nn>` lines to `plan.md` under a heading `## Black-box`, one per result, tagged `[bb]`, so the

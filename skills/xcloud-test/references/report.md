@@ -58,6 +58,11 @@ roles: <accounts> · baseline: ci/dev @ <sha>
 9. Lab friction (one line each; also sent with `report_friction`)
 10. Cleanup: what was created and removed
 
-Screenshots: `page_check` `evidence_url` links need lab Access (the team has it). For a public link, upload local
-files with `scripts/upload_screenshots.py --dir <dir> --pr <N> --json` (Cloudinary, credentials from the
-environment). Check every image for secrets before linking it.
+Screenshots are required in both forms: `report.md` embeds every check's shots under its section, `comment.md`
+gets a `**Screenshots**` block (findings first, then primary claim, preview vs `ci/dev`). `page_check` `evidence_url`
+links need lab Access, so before `results.py report`:
+1. `page_check` shots without a public URL: `evidence_publish {id}`.
+2. Local files: the uploader does not recurse, so run it once per folder (`lab-flow.mjs` writes `evidence/<check-id>/`):
+   `for d in ~/.xcloud-qa/pr<N>/evidence ~/.xcloud-qa/pr<N>/evidence/*/; do python3 ~/.claude/skills/xcloud-test/scripts/upload_screenshots.py --dir "$d" --pr <N> --json; done`
+   (Cloudinary; check `CLOUDINARY_*` env first) and write each URL into the matching evidence entry's `url`.
+3. Read every image: it shows the claim and no secret.
